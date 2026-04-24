@@ -41,28 +41,28 @@ use compat_harness::{extract_manifest, UpstreamPaths};
 use init::initialize_repo;
 use plugins::{PluginHooks, PluginManager, PluginManagerConfig, PluginRegistry};
 use render::{MarkdownStreamState, Spinner, TerminalRenderer};
-use runtime::{
-    check_base_commit, check_freshness, format_stale_base_warning, format_usd, load_oauth_credentials,
-    load_system_prompt, pricing_for_model, resolve_expected_base, resolve_sandbox_status,
-    ApiClient, ApiRequest, AssistantEvent, BranchFreshness, CompactionConfig, ConfigLoader, ConfigSource,
-    ContentBlock, ConversationMessage, ConversationRuntime, McpServer, McpServerManager,
-    McpServerSpec, McpTool, MessageRole, ModelPricing, PermissionMode, PermissionPolicy,
-    ProjectContext, PromptCacheEvent, ResolvedPermissionMode, RuntimeError, Session, TokenUsage,
-    ToolError, ToolExecutor, UsageTracker, TrustConfig, TrustResolver,
-};
 use runtime::bridge::{
-    BridgeConfig, BridgeManager, BridgeState as _, BridgeRuntime, BridgeWorkerType,
-    BridgeLoopOptions, BridgeLoopEvent, SpawnMode, WorkResponse, WorkSecret,
-    BridgeHttpClient, BridgeApiClient, validate_bridge_id,
-    SessionIngress, IngressConfig, IngressEvent, IngressSender,
-    SessionSpawner, SpawnedSession, SessionCreateError,
+    validate_bridge_id, BridgeApiClient, BridgeConfig, BridgeHttpClient, BridgeLoopEvent,
+    BridgeLoopOptions, BridgeManager, BridgeRuntime, BridgeState as _, BridgeWorkerType,
+    IngressConfig, IngressEvent, IngressSender, SessionCreateError, SessionIngress, SessionSpawner,
+    SpawnMode, SpawnedSession, WorkResponse, WorkSecret,
+};
+use runtime::{
+    check_base_commit, check_freshness, format_stale_base_warning, format_usd,
+    load_oauth_credentials, load_system_prompt, pricing_for_model, resolve_expected_base,
+    resolve_sandbox_status, ApiClient, ApiRequest, AssistantEvent, BranchFreshness,
+    CompactionConfig, ConfigLoader, ConfigSource, ContentBlock, ConversationMessage,
+    ConversationRuntime, McpServer, McpServerManager, McpServerSpec, McpTool, MessageRole,
+    ModelPricing, PermissionMode, PermissionPolicy, ProjectContext, PromptCacheEvent,
+    ResolvedPermissionMode, RuntimeError, Session, TokenUsage, ToolError, ToolExecutor,
+    TrustConfig, TrustResolver, UsageTracker,
 };
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
-use uuid::Uuid;
 use tools::{
     execute_tool, mvp_tool_specs, GlobalToolRegistry, RuntimeToolDefinition, ToolSearchOutput,
 };
+use uuid::Uuid;
 
 const DEFAULT_MODEL: &str = "claude-opus-4-6";
 fn max_tokens_for_model(model: &str) -> u32 {
@@ -1983,7 +1983,10 @@ fn check_branch_freshness(context: &StatusContext) -> DiagnosticCheck {
             "branch is up to date with origin/main".to_string(),
             vec![format!("Branch           {branch}")],
         ),
-        BranchFreshness::Stale { commits_behind, missing_fixes } => {
+        BranchFreshness::Stale {
+            commits_behind,
+            missing_fixes,
+        } => {
             let mut dets = vec![
                 format!("Branch           {branch}"),
                 format!("Commits behind   {commits_behind}"),
@@ -1997,8 +2000,12 @@ fn check_branch_freshness(context: &StatusContext) -> DiagnosticCheck {
                 format!("branch is {commits_behind} commit(s) behind origin/main"),
                 dets,
             )
-        },
-        BranchFreshness::Diverged { ahead, behind, missing_fixes } => {
+        }
+        BranchFreshness::Diverged {
+            ahead,
+            behind,
+            missing_fixes,
+        } => {
             let mut dets = vec![
                 format!("Branch           {branch}"),
                 format!("Commits ahead    {ahead}"),
@@ -2013,7 +2020,7 @@ fn check_branch_freshness(context: &StatusContext) -> DiagnosticCheck {
                 format!("branch has diverged from origin/main (+{ahead}/-{behind})"),
                 dets,
             )
-        },
+        }
     };
 
     let freshness_str = match freshness {
@@ -2032,11 +2039,7 @@ fn check_branch_freshness(context: &StatusContext) -> DiagnosticCheck {
 
 fn check_plugin_mcp_health(config: Option<&runtime::RuntimeConfig>) -> DiagnosticCheck {
     let Some(config) = config else {
-        return DiagnosticCheck::new(
-            "Plugins & MCP",
-            DiagnosticLevel::Warn,
-            "no config loaded",
-        );
+        return DiagnosticCheck::new("Plugins & MCP", DiagnosticLevel::Warn, "no config loaded");
     };
 
     let mcp_servers = config.mcp().servers();
@@ -2044,9 +2047,7 @@ fn check_plugin_mcp_health(config: Option<&runtime::RuntimeConfig>) -> Diagnosti
     let enabled_plugins = plugin_config.enabled_plugins();
     let external_dirs = plugin_config.external_directories();
 
-    let mut details = vec![
-        format!("MCP servers      {}", mcp_servers.len()),
-    ];
+    let mut details = vec![format!("MCP servers      {}", mcp_servers.len())];
     for (name, cfg) in mcp_servers {
         details.push(format!("  - {name} ({})", cfg.transport()));
     }
@@ -2054,7 +2055,10 @@ fn check_plugin_mcp_health(config: Option<&runtime::RuntimeConfig>) -> Diagnosti
     if !enabled_plugins.is_empty() {
         details.push(format!("Enabled plugins  {}", enabled_plugins.len()));
         for (name, enabled) in enabled_plugins {
-            details.push(format!("  - {name}: {}", if *enabled { "enabled" } else { "disabled" }));
+            details.push(format!(
+                "  - {name}: {}",
+                if *enabled { "enabled" } else { "disabled" }
+            ));
         }
     }
 
@@ -2082,17 +2086,21 @@ fn check_plugin_mcp_health(config: Option<&runtime::RuntimeConfig>) -> Diagnosti
         .with_details(details)
         .with_data(Map::from_iter([
             ("mcp_server_count".to_string(), json!(mcp_servers.len())),
-            ("enabled_plugin_count".to_string(), json!(enabled_plugins.len())),
+            (
+                "enabled_plugin_count".to_string(),
+                json!(enabled_plugins.len()),
+            ),
         ]))
 }
 
-fn check_trust_config_health(cwd: &Path, config: Option<&runtime::RuntimeConfig>) -> DiagnosticCheck {
+fn check_trust_config_health(
+    cwd: &Path,
+    config: Option<&runtime::RuntimeConfig>,
+) -> DiagnosticCheck {
     let trusted_roots = config.map(|c| c.trusted_roots()).unwrap_or(&[]);
     let cwd_str = cwd.to_string_lossy().to_string();
 
-    let mut details = vec![
-        format!("Trusted roots    {}", trusted_roots.len()),
-    ];
+    let mut details = vec![format!("Trusted roots    {}", trusted_roots.len())];
     for root in trusted_roots {
         details.push(format!("  - {root}"));
     }
@@ -2101,14 +2109,17 @@ fn check_trust_config_health(cwd: &Path, config: Option<&runtime::RuntimeConfig>
         false
     } else {
         let trust_config = TrustConfig::new();
-        let trust_config = trusted_roots.iter().fold(trust_config, |cfg, root| {
-            cfg.with_allowlisted(root)
-        });
+        let trust_config = trusted_roots
+            .iter()
+            .fold(trust_config, |cfg, root| cfg.with_allowlisted(root));
         let resolver = TrustResolver::new(trust_config);
         resolver.trusts(&cwd_str)
     };
 
-    details.push(format!("Current dir      {}", if is_trusted { "trusted" } else { "not trusted" }));
+    details.push(format!(
+        "Current dir      {}",
+        if is_trusted { "trusted" } else { "not trusted" }
+    ));
 
     let summary = match (trusted_roots.len(), is_trusted) {
         (0, _) => "no trusted roots configured".to_string(),
@@ -4250,7 +4261,10 @@ impl LiveCli {
         // If bridge is already running, show status
         if let Some(state) = &self.bridge_state {
             if state.is_running {
-                println!("{}", render_remote_control_status(&self.bridge_state, &name, &session_id));
+                println!(
+                    "{}",
+                    render_remote_control_status(&self.bridge_state, &name, &session_id)
+                );
                 return Ok(());
             }
         }
@@ -4304,7 +4318,10 @@ impl LiveCli {
 
         println!("✅ Remote Control connected!");
         println!();
-        println!("{}", render_remote_control_status(&self.bridge_state, &None, &None));
+        println!(
+            "{}",
+            render_remote_control_status(&self.bridge_state, &None, &None)
+        );
 
         Ok(())
     }
@@ -7317,7 +7334,10 @@ impl ApiClient for AnthropicRuntimeClient {
         })
     }
 
-    fn send_message(&mut self, request: ApiRequest) -> Result<runtime::MessageResponse, RuntimeError> {
+    fn send_message(
+        &mut self,
+        request: ApiRequest,
+    ) -> Result<runtime::MessageResponse, RuntimeError> {
         if let Some(progress_reporter) = &self.progress_reporter {
             progress_reporter.mark_model_phase();
         }

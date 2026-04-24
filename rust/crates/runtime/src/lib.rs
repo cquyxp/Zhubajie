@@ -37,6 +37,8 @@ pub mod sandbox;
 mod session;
 pub mod session_control;
 pub use session_control::SessionStore;
+pub mod bridge;
+pub mod cron_scheduler;
 mod sse;
 pub mod stale_base;
 pub mod stale_branch;
@@ -44,8 +46,6 @@ pub mod summary_compression;
 pub mod task_packet;
 pub mod task_registry;
 pub mod team_cron_registry;
-pub mod cron_scheduler;
-pub mod bridge;
 mod trust_resolver;
 mod usage;
 pub mod worker_boot;
@@ -53,29 +53,28 @@ pub mod worker_boot;
 pub use bash::{execute_bash, BashCommandInput, BashCommandOutput};
 pub use bootstrap::{BootstrapPhase, BootstrapPlan};
 pub use branch_lock::{detect_branch_lock_collisions, BranchLockCollision, BranchLockIntent};
+pub use bridge::{
+    api::{validate_bridge_id, BridgeApiClient, BridgeFatalError, BridgeHttpClient},
+    ingress::{
+        ControlCommand, IngressConfig, IngressError, IngressEvent, IngressSender,
+        PermissionRequest, SessionIngress,
+    },
+    manager::BridgeManager,
+    run_bridge_loop,
+    session::{SessionCreateError, SessionSpawner, SpawnedSession},
+    types::{
+        AuthConfig, BridgeConfig, BridgeWorkerType, GitInfo, PermissionResponseEvent,
+        SessionActivity, SessionActivityType, SessionDoneStatus, SourceConfig, SpawnMode, WorkData,
+        WorkDataType, WorkResponse, WorkSecret, BRIDGE_LOGIN_INSTRUCTION,
+        DEFAULT_CONTROL_SERVER_URL, DEFAULT_INGRESS_SERVER_URL, DEFAULT_SESSION_TIMEOUT_MS,
+        REMOTE_CONTROL_DISCONNECTED_MSG,
+    },
+    BridgeError, BridgeLoopEvent, BridgeLoopOptions, BridgeRuntime,
+};
 pub use compact::{
     compact_session, compact_session_legacy, estimate_session_tokens, format_compact_summary,
     get_compact_continuation_message, should_compact, CompactionConfig, CompactionMode,
     CompactionResult, LlmCompactionConfig,
-};
-pub use bridge::{
-    api::{BridgeApiClient, BridgeFatalError, BridgeHttpClient, validate_bridge_id},
-    manager::BridgeManager,
-    ingress::{
-        IngressConfig, IngressError, IngressEvent, IngressSender,
-        SessionIngress, ControlCommand, PermissionRequest,
-    },
-    session::{
-        SessionSpawner, SpawnedSession, SessionCreateError,
-    },
-    types::{
-        AuthConfig, BridgeConfig, BridgeWorkerType,
-        PermissionResponseEvent, SessionActivity, SessionActivityType, SessionDoneStatus,
-        SpawnMode, SourceConfig, WorkData, WorkDataType, WorkResponse, WorkSecret, GitInfo,
-        BRIDGE_LOGIN_INSTRUCTION, DEFAULT_SESSION_TIMEOUT_MS, REMOTE_CONTROL_DISCONNECTED_MSG,
-        DEFAULT_CONTROL_SERVER_URL, DEFAULT_INGRESS_SERVER_URL,
-    },
-    BridgeError, BridgeRuntime, BridgeLoopOptions, BridgeLoopEvent, run_bridge_loop,
 };
 pub use config::{
     ConfigEntry, ConfigError, ConfigLoader, ConfigSource, McpConfigCollection,

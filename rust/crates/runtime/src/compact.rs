@@ -46,8 +46,7 @@ pub struct CompactionResult {
     pub llm_error: Option<String>,
 }
 
-const NO_TOOLS_PREAMBLE: &str =
-    "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.
+const NO_TOOLS_PREAMBLE: &str = "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.
 
 - Do NOT use Read, Bash, Grep, Glob, Edit, Write, or ANY other tools.
 - You already have all the context you need in the conversation above.
@@ -100,7 +99,6 @@ impl Default for CompactionConfig {
         }
     }
 }
-
 
 /// Roughly estimates the token footprint of the current session transcript.
 #[must_use]
@@ -670,20 +668,12 @@ pub fn compact_session(
 ) -> CompactionResult {
     match mode {
         CompactionMode::Heuristic => compact_session_heuristic(session, config),
-        CompactionMode::LlmDriven => compact_session_llm_or_fallback(
-            session,
-            config,
-            llm_config,
-            api_client,
-            false,
-        ),
-        CompactionMode::Hybrid => compact_session_llm_or_fallback(
-            session,
-            config,
-            llm_config,
-            api_client,
-            true,
-        ),
+        CompactionMode::LlmDriven => {
+            compact_session_llm_or_fallback(session, config, llm_config, api_client, false)
+        }
+        CompactionMode::Hybrid => {
+            compact_session_llm_or_fallback(session, config, llm_config, api_client, true)
+        }
     }
 }
 
@@ -706,7 +696,10 @@ fn compact_session_heuristic(session: &Session, config: CompactionConfig) -> Com
         .first()
         .and_then(extract_existing_compacted_summary);
     let compacted_prefix_len = usize::from(existing_summary.is_some());
-    let raw_keep_from = session.messages.len().saturating_sub(config.preserve_recent_messages);
+    let raw_keep_from = session
+        .messages
+        .len()
+        .saturating_sub(config.preserve_recent_messages);
     let keep_from = ensure_tool_result_pairing(session, raw_keep_from, compacted_prefix_len);
     let removed = &session.messages[compacted_prefix_len..keep_from];
     let preserved = session.messages[keep_from..].to_vec();
@@ -786,7 +779,10 @@ fn compact_session_llm_or_fallback(
     }
 
     let compacted_prefix_len = compacted_summary_prefix_len(session);
-    let raw_keep_from = session.messages.len().saturating_sub(config.preserve_recent_messages);
+    let raw_keep_from = session
+        .messages
+        .len()
+        .saturating_sub(config.preserve_recent_messages);
     let keep_from = ensure_tool_result_pairing(session, raw_keep_from, compacted_prefix_len);
     let messages_to_summarize = &session.messages[compacted_prefix_len..keep_from];
 
@@ -806,7 +802,10 @@ fn compact_session_llm_or_fallback(
     let mut messages = messages_to_summarize.to_vec();
     messages.push(ConversationMessage::user_text(BASE_COMPACT_PROMPT));
 
-    let request = ApiRequest { system_prompt, messages };
+    let request = ApiRequest {
+        system_prompt,
+        messages,
+    };
 
     let mut llm_usage = None;
     let mut llm_error = None;

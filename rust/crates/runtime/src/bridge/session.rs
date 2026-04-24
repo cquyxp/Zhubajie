@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::bridge::types::{SpawnMode, WorkSecret, GitInfo, SourceConfig, AuthConfig};
+use crate::bridge::types::{AuthConfig, GitInfo, SourceConfig, SpawnMode, WorkSecret};
 use crate::session::Session;
 
 /// Session creation error
@@ -49,15 +49,9 @@ impl SessionSpawner {
         work_secret: &WorkSecret,
     ) -> Result<SpawnedSession, SessionCreateError> {
         match self.spawn_mode {
-            SpawnMode::SingleSession => {
-                self.spawn_single_session(work_secret).await
-            }
-            SpawnMode::Worktree => {
-                self.spawn_worktree_session(work_secret).await
-            }
-            SpawnMode::SameDir => {
-                self.spawn_same_dir_session(work_secret).await
-            }
+            SpawnMode::SingleSession => self.spawn_single_session(work_secret).await,
+            SpawnMode::Worktree => self.spawn_worktree_session(work_secret).await,
+            SpawnMode::SameDir => self.spawn_same_dir_session(work_secret).await,
         }
     }
 
@@ -80,7 +74,10 @@ impl SessionSpawner {
             work_dir,
             mode: SpawnMode::SingleSession,
             cleanup: None,
-            env_vars: work_secret.environment_variables.clone().unwrap_or_default(),
+            env_vars: work_secret
+                .environment_variables
+                .clone()
+                .unwrap_or_default(),
         })
     }
 
@@ -104,7 +101,10 @@ impl SessionSpawner {
             work_dir,
             mode: SpawnMode::Worktree,
             cleanup: Some(SessionCleanup::Worktree),
-            env_vars: work_secret.environment_variables.clone().unwrap_or_default(),
+            env_vars: work_secret
+                .environment_variables
+                .clone()
+                .unwrap_or_default(),
         })
     }
 
@@ -127,7 +127,10 @@ impl SessionSpawner {
             work_dir,
             mode: SpawnMode::SameDir,
             cleanup: None,
-            env_vars: work_secret.environment_variables.clone().unwrap_or_default(),
+            env_vars: work_secret
+                .environment_variables
+                .clone()
+                .unwrap_or_default(),
         })
     }
 
@@ -186,7 +189,10 @@ impl SessionSpawner {
 
                 if !status.status.success() {
                     let error = String::from_utf8_lossy(&status.stderr);
-                    return Err(SessionCreateError::Git(format!("Checkout failed: {}", error)));
+                    return Err(SessionCreateError::Git(format!(
+                        "Checkout failed: {}",
+                        error
+                    )));
                 }
             }
         } else {
@@ -213,7 +219,9 @@ impl SessionSpawner {
         work_secret: &WorkSecret,
     ) -> Result<(), SessionCreateError> {
         // Find git info with token
-        let git_token = work_secret.sources.iter()
+        let git_token = work_secret
+            .sources
+            .iter()
             .find_map(|s| s.git_info.as_ref().and_then(|g| g.token.as_ref()));
 
         if let Some(token) = git_token {

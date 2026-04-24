@@ -163,10 +163,7 @@ impl BridgeHttpClient {
     }
 
     /// Set debug callback
-    pub fn with_debug_handler(
-        mut self,
-        handler: impl Fn(&str) + Send + Sync + 'static,
-    ) -> Self {
+    pub fn with_debug_handler(mut self, handler: impl Fn(&str) + Send + Sync + 'static) -> Self {
         self.on_debug = Some(Arc::new(handler));
         self
     }
@@ -201,8 +198,7 @@ impl BridgeHttpClient {
             if let Some(token) = get_token() {
                 headers.insert(
                     "x-bridge-device-token",
-                    reqwest::header::HeaderValue::from_str(&token)
-                        .expect("valid header value"),
+                    reqwest::header::HeaderValue::from_str(&token).expect("valid header value"),
                 );
             }
         }
@@ -221,10 +217,22 @@ impl BridgeHttpClient {
         let error_type = extract_error_type(&body);
 
         match status {
-            401 => BridgeFatalError::AuthenticationFailed { message, error_type },
-            403 => BridgeFatalError::AccessDenied { message, error_type },
-            404 => BridgeFatalError::NotFound { message, error_type },
-            410 => BridgeFatalError::SessionExpired { message, error_type },
+            401 => BridgeFatalError::AuthenticationFailed {
+                message,
+                error_type,
+            },
+            403 => BridgeFatalError::AccessDenied {
+                message,
+                error_type,
+            },
+            404 => BridgeFatalError::NotFound {
+                message,
+                error_type,
+            },
+            410 => BridgeFatalError::SessionExpired {
+                message,
+                error_type,
+            },
             _ => BridgeFatalError::Other {
                 context,
                 status,
@@ -332,10 +340,7 @@ impl BridgeApiClient for BridgeHttpClient {
 
         let url = self
             .base_url
-            .join(&format!(
-                "/v1/environments/{}/work/poll",
-                environment_id
-            ))
+            .join(&format!("/v1/environments/{}/work/poll", environment_id))
             .map_err(|e| BridgeFatalError::RequestError(e.to_string()))?;
 
         let mut request = self
@@ -363,7 +368,9 @@ impl BridgeApiClient for BridgeHttpClient {
             return Err(self.handle_error_response(status, response_body, "Poll".into()));
         }
 
-        if response_body.is_null() || response_body.is_object() && response_body.as_object().unwrap().is_empty() {
+        if response_body.is_null()
+            || response_body.is_object() && response_body.as_object().unwrap().is_empty()
+        {
             return Ok(None);
         }
 
@@ -372,9 +379,7 @@ impl BridgeApiClient for BridgeHttpClient {
 
         self.debug(&format!(
             "[bridge:api] GET .../work/poll -> {} workId={} type={:?}",
-            status,
-            work_response.id,
-            work_response.data.r#type
+            status, work_response.id, work_response.data.r#type
         ));
 
         Ok(Some(work_response))
@@ -389,8 +394,7 @@ impl BridgeApiClient for BridgeHttpClient {
     ) -> Result<(), BridgeFatalError> {
         validate_bridge_id(environment_id, "environmentId")
             .map_err(|e| BridgeFatalError::RequestError(e))?;
-        validate_bridge_id(work_id, "workId")
-            .map_err(|e| BridgeFatalError::RequestError(e))?;
+        validate_bridge_id(work_id, "workId").map_err(|e| BridgeFatalError::RequestError(e))?;
 
         self.debug(&format!("[bridge:api] POST .../work/{}/ack", work_id));
 
@@ -422,7 +426,10 @@ impl BridgeApiClient for BridgeHttpClient {
             return Err(self.handle_error_response(status, response_body, "Acknowledge".into()));
         }
 
-        self.debug(&format!("[bridge:api] POST .../work/{}/ack -> {}", work_id, status));
+        self.debug(&format!(
+            "[bridge:api] POST .../work/{}/ack -> {}",
+            work_id, status
+        ));
 
         Ok(())
     }
@@ -436,10 +443,12 @@ impl BridgeApiClient for BridgeHttpClient {
     ) -> Result<(), BridgeFatalError> {
         validate_bridge_id(environment_id, "environmentId")
             .map_err(|e| BridgeFatalError::RequestError(e))?;
-        validate_bridge_id(work_id, "workId")
-            .map_err(|e| BridgeFatalError::RequestError(e))?;
+        validate_bridge_id(work_id, "workId").map_err(|e| BridgeFatalError::RequestError(e))?;
 
-        self.debug(&format!("[bridge:api] POST .../work/{}/stop force={}", work_id, force));
+        self.debug(&format!(
+            "[bridge:api] POST .../work/{}/stop force={}",
+            work_id, force
+        ));
 
         let url = self
             .base_url
@@ -472,27 +481,27 @@ impl BridgeApiClient for BridgeHttpClient {
             return Err(self.handle_error_response(status, response_body, "StopWork".into()));
         }
 
-        self.debug(&format!("[bridge:api] POST .../work/{}/stop -> {}", work_id, status));
+        self.debug(&format!(
+            "[bridge:api] POST .../work/{}/stop -> {}",
+            work_id, status
+        ));
 
         Ok(())
     }
 
     /// Deregister environment
-    async fn deregister_environment(
-        &self,
-        environment_id: &str,
-    ) -> Result<(), BridgeFatalError> {
+    async fn deregister_environment(&self, environment_id: &str) -> Result<(), BridgeFatalError> {
         validate_bridge_id(environment_id, "environmentId")
             .map_err(|e| BridgeFatalError::RequestError(e))?;
 
-        self.debug(&format!("[bridge:api] DELETE /v1/environments/bridge/{}", environment_id));
+        self.debug(&format!(
+            "[bridge:api] DELETE /v1/environments/bridge/{}",
+            environment_id
+        ));
 
         let url = self
             .base_url
-            .join(&format!(
-                "/v1/environments/bridge/{}",
-                environment_id
-            ))
+            .join(&format!("/v1/environments/bridge/{}", environment_id))
             .map_err(|e| BridgeFatalError::RequestError(e.to_string()))?;
 
         let access_token = (self.get_access_token)()
@@ -517,20 +526,23 @@ impl BridgeApiClient for BridgeHttpClient {
             return Err(self.handle_error_response(status, response_body, "Deregister".into()));
         }
 
-        self.debug(&format!("[bridge:api] DELETE .../bridge/{} -> {}", environment_id, status));
+        self.debug(&format!(
+            "[bridge:api] DELETE .../bridge/{} -> {}",
+            environment_id, status
+        ));
 
         Ok(())
     }
 
     /// Archive session
-    async fn archive_session(
-        &self,
-        session_id: &str,
-    ) -> Result<(), BridgeFatalError> {
+    async fn archive_session(&self, session_id: &str) -> Result<(), BridgeFatalError> {
         validate_bridge_id(session_id, "sessionId")
             .map_err(|e| BridgeFatalError::RequestError(e))?;
 
-        self.debug(&format!("[bridge:api] POST /v1/sessions/{}/archive", session_id));
+        self.debug(&format!(
+            "[bridge:api] POST /v1/sessions/{}/archive",
+            session_id
+        ));
 
         let url = self
             .base_url
@@ -554,7 +566,10 @@ impl BridgeApiClient for BridgeHttpClient {
 
         if status == 409 {
             // Already archived, not an error
-            self.debug(&format!("[bridge:api] POST /v1/sessions/{}/archive -> 409 (already archived)", session_id));
+            self.debug(&format!(
+                "[bridge:api] POST /v1/sessions/{}/archive -> 409 (already archived)",
+                session_id
+            ));
             return Ok(());
         }
 
@@ -567,7 +582,10 @@ impl BridgeApiClient for BridgeHttpClient {
             return Err(self.handle_error_response(status, response_body, "ArchiveSession".into()));
         }
 
-        self.debug(&format!("[bridge:api] POST /v1/sessions/{}/archive -> {}", session_id, status));
+        self.debug(&format!(
+            "[bridge:api] POST /v1/sessions/{}/archive -> {}",
+            session_id, status
+        ));
 
         Ok(())
     }
@@ -583,7 +601,10 @@ impl BridgeApiClient for BridgeHttpClient {
         validate_bridge_id(session_id, "sessionId")
             .map_err(|e| BridgeFatalError::RequestError(e))?;
 
-        self.debug(&format!("[bridge:api] POST .../bridge/reconnect session_id={}", session_id));
+        self.debug(&format!(
+            "[bridge:api] POST .../bridge/reconnect session_id={}",
+            session_id
+        ));
 
         let url = self
             .base_url
@@ -613,10 +634,17 @@ impl BridgeApiClient for BridgeHttpClient {
             .map_err(|e| BridgeFatalError::InvalidResponse(e.to_string()))?;
 
         if status != 200 && status != 204 {
-            return Err(self.handle_error_response(status, response_body, "ReconnectSession".into()));
+            return Err(self.handle_error_response(
+                status,
+                response_body,
+                "ReconnectSession".into(),
+            ));
         }
 
-        self.debug(&format!("[bridge:api] POST .../bridge/reconnect -> {}", status));
+        self.debug(&format!(
+            "[bridge:api] POST .../bridge/reconnect -> {}",
+            status
+        ));
 
         Ok(())
     }
@@ -630,8 +658,7 @@ impl BridgeApiClient for BridgeHttpClient {
     ) -> Result<(bool, String), BridgeFatalError> {
         validate_bridge_id(environment_id, "environmentId")
             .map_err(|e| BridgeFatalError::RequestError(e))?;
-        validate_bridge_id(work_id, "workId")
-            .map_err(|e| BridgeFatalError::RequestError(e))?;
+        validate_bridge_id(work_id, "workId").map_err(|e| BridgeFatalError::RequestError(e))?;
 
         self.debug(&format!("[bridge:api] POST .../work/{}/heartbeat", work_id));
 
@@ -663,13 +690,8 @@ impl BridgeApiClient for BridgeHttpClient {
             return Err(self.handle_error_response(status, response_body, "Heartbeat".into()));
         }
 
-        let lease_extended = response_body["lease_extended"]
-            .as_bool()
-            .unwrap_or(false);
-        let state = response_body["state"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
+        let lease_extended = response_body["lease_extended"].as_bool().unwrap_or(false);
+        let state = response_body["state"].as_str().unwrap_or("").to_string();
 
         self.debug(&format!(
             "[bridge:api] POST .../work/{}/heartbeat -> {} lease_extended={} state={}",
@@ -716,7 +738,11 @@ impl BridgeApiClient for BridgeHttpClient {
             .map_err(|e| BridgeFatalError::InvalidResponse(e.to_string()))?;
 
         if status != 200 && status != 204 {
-            return Err(self.handle_error_response(status, response_body, "SendPermissionResponseEvent".into()));
+            return Err(self.handle_error_response(
+                status,
+                response_body,
+                "SendPermissionResponseEvent".into(),
+            ));
         }
 
         self.debug(&format!("[bridge:api] POST .../events -> {}", status));

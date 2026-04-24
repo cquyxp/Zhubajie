@@ -1,12 +1,12 @@
 //! Bridge system for Remote Control (claude.ai integration)
 
-pub mod types;
 pub mod api;
-pub mod manager;
 pub mod ingress;
+pub mod manager;
 pub mod session;
+pub mod types;
 
-pub use api::{BridgeApiClient, BridgeFatalError, BridgeHttpClient, validate_bridge_id};
+pub use api::{validate_bridge_id, BridgeApiClient, BridgeFatalError, BridgeHttpClient};
 pub use manager::BridgeManager;
 pub use types::*;
 
@@ -36,7 +36,7 @@ use crate::bridge::types::{BridgeConfig, SpawnMode, WorkResponse, WorkSecret};
 #[derive(Debug, thiserror::Error)]
 pub enum BridgeError {
     #[error("Fatal bridge error: {0}")]
-    Fatal(#[from BridgeFatalError),
+    Fatal(#[from] BridgeFatalError),
 
     #[error("Bridge not running")]
     NotRunning,
@@ -75,10 +75,7 @@ pub struct BridgeRuntime {
 
 impl BridgeRuntime {
     /// Create a new bridge runtime
-    pub fn new(
-        config: BridgeConfig,
-        api_client: Arc<dyn BridgeApiClient + Send + Sync>,
-    ) -> Self {
+    pub fn new(config: BridgeConfig, api_client: Arc<dyn BridgeApiClient + Send + Sync>) -> Self {
         Self {
             manager: Arc::new(BridgeManager::new(config.clone(), api_client)),
             config,
@@ -138,9 +135,9 @@ impl BridgeRuntime {
 pub enum BridgeLoopEvent {
     Started,
     WorkReceived(WorkResponse),
-    WorkAcknowledged(String), // work_id
+    WorkAcknowledged(String),    // work_id
     HeartbeatSent(String, bool), // work_id, lease_extended
-    WorkCompleted(String), // work_id
+    WorkCompleted(String),       // work_id
     Error(BridgeError),
     Stopped,
 }
@@ -191,7 +188,10 @@ mod tests {
     fn test_bridge_loop_options_default() {
         let options = BridgeLoopOptions::default();
         assert_eq!(options.poll_interval, std::time::Duration::from_secs(2));
-        assert_eq!(options.heartbeat_interval, std::time::Duration::from_secs(30));
+        assert_eq!(
+            options.heartbeat_interval,
+            std::time::Duration::from_secs(30)
+        );
         assert!(options.reclaim_older_than_ms.is_none());
     }
 }

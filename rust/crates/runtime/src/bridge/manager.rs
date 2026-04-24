@@ -33,10 +33,7 @@ pub struct BridgeManager {
 
 impl BridgeManager {
     /// Create a new bridge manager
-    pub fn new(
-        config: BridgeConfig,
-        api_client: Arc<dyn BridgeApiClient + Send + Sync>,
-    ) -> Self {
+    pub fn new(config: BridgeConfig, api_client: Arc<dyn BridgeApiClient + Send + Sync>) -> Self {
         Self {
             config,
             api_client,
@@ -73,7 +70,9 @@ impl BridgeManager {
         };
 
         if let Some(environment_id) = environment_id {
-            self.api_client.deregister_environment(&environment_id).await?;
+            self.api_client
+                .deregister_environment(&environment_id)
+                .await?;
         }
 
         {
@@ -163,11 +162,7 @@ impl BridgeManager {
     }
 
     /// Stop work
-    pub async fn stop_work(
-        &self,
-        work_id: String,
-        force: bool,
-    ) -> Result<(), BridgeFatalError> {
+    pub async fn stop_work(&self, work_id: String, force: bool) -> Result<(), BridgeFatalError> {
         let environment_id = {
             let state = self.state.lock().unwrap();
             state.environment_id.clone()

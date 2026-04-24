@@ -145,7 +145,10 @@ impl SessionIngress {
 
         let mut request = http::Request::builder()
             .uri(&self.config.ingress_url)
-            .header("Authorization", format!("Bearer {}", self.config.session_token))
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.config.session_token),
+            )
             .body(())
             .map_err(|e| IngressError::WebSocket(format!("Request build error: {}", e)))?;
 
@@ -163,7 +166,9 @@ impl SessionIngress {
         self.is_connected = true;
 
         if let Some(sender) = &self.event_sender {
-            sender.send(IngressEvent::Connected).await
+            sender
+                .send(IngressEvent::Connected)
+                .await
                 .map_err(|e| IngressError::Send(e.to_string()))?;
         }
 
@@ -178,7 +183,11 @@ impl SessionIngress {
 
     /// Read loop for WebSocket messages
     async fn read_loop(
-        mut read: futures_util::stream::SplitStream<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>>,
+        mut read: futures_util::stream::SplitStream<
+            tokio_tungstenite::WebSocketStream<
+                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+            >,
+        >,
         sender: Option<mpsc::Sender<IngressEvent>>,
     ) {
         while let Some(msg) = read.next().await {
@@ -219,41 +228,37 @@ impl SessionIngress {
     /// Parse an incoming message
     fn parse_message(text: &str) -> IngressEvent {
         match serde_json::from_str::<IncomingMessage>(text) {
-            Ok(msg) => {
-                match msg.msg_type.as_str() {
-                    "user_input" => {
-                        if let Some(data) = msg.data {
-                            if let Some(text) = data.as_str() {
-                                return IngressEvent::UserInput(text.to_string());
-                            } else if let Some(input) = data.get("text").and_then(|t| t.as_str()) {
-                                return IngressEvent::UserInput(input.to_string());
-                            }
+            Ok(msg) => match msg.msg_type.as_str() {
+                "user_input" => {
+                    if let Some(data) = msg.data {
+                        if let Some(text) = data.as_str() {
+                            return IngressEvent::UserInput(text.to_string());
+                        } else if let Some(input) = data.get("text").and_then(|t| t.as_str()) {
+                            return IngressEvent::UserInput(input.to_string());
                         }
-                        IngressEvent::Raw(serde_json::json!({ "type": msg.msg_type, "data": msg.data }))
                     }
-                    "control_command" => {
-                        if let Some(data) = msg.data {
-                            let cmd = Self::parse_control_command(&data);
-                            return IngressEvent::ControlCommand(cmd);
-                        }
-                        IngressEvent::Raw(serde_json::json!({ "type": msg.msg_type, "data": msg.data }))
-                    }
-                    "permission_request" => {
-                        if let Some(data) = msg.data {
-                            if let Ok(req) = serde_json::from_value::<PermissionRequest>(data) {
-                                return IngressEvent::PermissionRequest(req);
-                            }
-                        }
-                        IngressEvent::Raw(serde_json::json!({ "type": msg.msg_type, "data": msg.data }))
-                    }
-                    _ => {
-                        IngressEvent::Raw(serde_json::json!({ "type": msg.msg_type, "data": msg.data }))
-                    }
+                    IngressEvent::Raw(serde_json::json!({ "type": msg.msg_type, "data": msg.data }))
                 }
-            }
-            Err(_) => {
-                IngressEvent::UserInput(text.to_string())
-            }
+                "control_command" => {
+                    if let Some(data) = msg.data {
+                        let cmd = Self::parse_control_command(&data);
+                        return IngressEvent::ControlCommand(cmd);
+                    }
+                    IngressEvent::Raw(serde_json::json!({ "type": msg.msg_type, "data": msg.data }))
+                }
+                "permission_request" => {
+                    if let Some(data) = msg.data {
+                        if let Ok(req) = serde_json::from_value::<PermissionRequest>(data) {
+                            return IngressEvent::PermissionRequest(req);
+                        }
+                    }
+                    IngressEvent::Raw(serde_json::json!({ "type": msg.msg_type, "data": msg.data }))
+                }
+                _ => {
+                    IngressEvent::Raw(serde_json::json!({ "type": msg.msg_type, "data": msg.data }))
+                }
+            },
+            Err(_) => IngressEvent::UserInput(text.to_string()),
         }
     }
 
@@ -329,9 +334,13 @@ impl IngressSender {
         &self,
         response: PermissionResponseEvent,
     ) -> Result<(), IngressError> {
-        let url = format!("{}/v1/sessions/events", self.api_base_url.trim_end_matches('/'));
+        let url = format!(
+            "{}/v1/sessions/events",
+            self.api_base_url.trim_end_matches('/')
+        );
 
-        self.client.post(&url)
+        self.client
+            .post(&url)
             .header("Authorization", format!("Bearer {}", self.session_token))
             .header("Content-Type", "application/json")
             .json(&response)
@@ -343,10 +352,7 @@ impl IngressSender {
     }
 
     /// Send a session activity
-    pub async fn send_activity(
-        &self,
-        activity: SessionActivity,
-    ) -> Result<(), IngressError> {
+    pub async fn send_activity(&self, activity: SessionActivity) -> Result<(), IngressError> {
         let event = serde_json::json!({
             "type": "session_activity",
             "activity": {
@@ -361,9 +367,13 @@ impl IngressSender {
             }
         });
 
-        let url = format!("{}/v1/sessions/events", self.api_base_url.trim_end_matches('/'));
+        let url = format!(
+            "{}/v1/sessions/events",
+            self.api_base_url.trim_end_matches('/')
+        );
 
-        self.client.post(&url)
+        self.client
+            .post(&url)
             .header("Authorization", format!("Bearer {}", self.session_token))
             .header("Content-Type", "application/json")
             .json(&event)
@@ -375,10 +385,7 @@ impl IngressSender {
     }
 
     /// Send session done status
-    pub async fn send_session_done(
-        &self,
-        status: SessionDoneStatus,
-    ) -> Result<(), IngressError> {
+    pub async fn send_session_done(&self, status: SessionDoneStatus) -> Result<(), IngressError> {
         let status_str = match status {
             SessionDoneStatus::Completed => "completed",
             SessionDoneStatus::Failed => "failed",
@@ -390,9 +397,13 @@ impl IngressSender {
             "status": status_str,
         });
 
-        let url = format!("{}/v1/sessions/events", self.api_base_url.trim_end_matches('/'));
+        let url = format!(
+            "{}/v1/sessions/events",
+            self.api_base_url.trim_end_matches('/')
+        );
 
-        self.client.post(&url)
+        self.client
+            .post(&url)
             .header("Authorization", format!("Bearer {}", self.session_token))
             .header("Content-Type", "application/json")
             .json(&event)
@@ -456,7 +467,7 @@ mod tests {
         let text = r#"{"type":"control_command","data":{"command":"stop"}}"#;
         let event = SessionIngress::parse_message(text);
         match event {
-            IngressEvent::ControlCommand(ControlCommand::Stop) => {},
+            IngressEvent::ControlCommand(ControlCommand::Stop) => {}
             _ => panic!("Expected Stop control command"),
         }
     }
@@ -466,7 +477,7 @@ mod tests {
         let text = r#"{"type":"control_command","data":{"command":"pause"}}"#;
         let event = SessionIngress::parse_message(text);
         match event {
-            IngressEvent::ControlCommand(ControlCommand::Pause) => {},
+            IngressEvent::ControlCommand(ControlCommand::Pause) => {}
             _ => panic!("Expected Pause control command"),
         }
     }
@@ -476,7 +487,7 @@ mod tests {
         let text = r#"{"type":"control_command","data":{"command":"resume"}}"#;
         let event = SessionIngress::parse_message(text);
         match event {
-            IngressEvent::ControlCommand(ControlCommand::Resume) => {},
+            IngressEvent::ControlCommand(ControlCommand::Resume) => {}
             _ => panic!("Expected Resume control command"),
         }
     }
@@ -497,7 +508,7 @@ mod tests {
             IngressEvent::PermissionRequest(req) => {
                 assert_eq!(req.request_id, "req-123");
                 assert_eq!(req.tool_name, "read_file");
-            },
+            }
             _ => panic!("Expected PermissionRequest event"),
         }
     }
@@ -507,7 +518,7 @@ mod tests {
         let text = r#"{"type":"unknown_type","data":{"foo":"bar"}}"#;
         let event = SessionIngress::parse_message(text);
         match event {
-            IngressEvent::Raw(_) => {},
+            IngressEvent::Raw(_) => {}
             _ => panic!("Expected Raw event for unknown type"),
         }
     }

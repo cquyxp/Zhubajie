@@ -203,7 +203,8 @@ mod tests {
         let serialized = serde_json::to_string(&session_type).expect("Failed to serialize");
         assert_eq!(serialized, "\"session\"");
 
-        let deserialized: WorkDataType = serde_json::from_str(&serialized).expect("Failed to deserialize");
+        let deserialized: WorkDataType =
+            serde_json::from_str(&serialized).expect("Failed to deserialize");
         assert_eq!(deserialized, WorkDataType::Session);
 
         let healthcheck_type = WorkDataType::Healthcheck;
@@ -214,7 +215,10 @@ mod tests {
     #[test]
     fn test_bridge_worker_type_to_string() {
         assert_eq!(BridgeWorkerType::ClaudeCode.to_string(), "claude_code");
-        assert_eq!(BridgeWorkerType::ClaudeCodeAssistant.to_string(), "claude_code_assistant");
+        assert_eq!(
+            BridgeWorkerType::ClaudeCodeAssistant.to_string(),
+            "claude_code_assistant"
+        );
     }
 
     #[test]

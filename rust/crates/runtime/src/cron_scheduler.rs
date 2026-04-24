@@ -145,7 +145,10 @@ impl Drop for CronScheduler {
 }
 
 /// Checks all enabled cron jobs and triggers those that are due.
-async fn check_and_trigger_jobs(registry: &CronRegistry, event_tx: &broadcast::Sender<CronSchedulerEvent>) {
+async fn check_and_trigger_jobs(
+    registry: &CronRegistry,
+    event_tx: &broadcast::Sender<CronSchedulerEvent>,
+) {
     let now = Local::now();
 
     for entry in registry.list(true) {
@@ -179,7 +182,11 @@ fn parse_cron_schedule(schedule: &str) -> Result<Schedule, String> {
 fn is_due(schedule: &Schedule, now: &DateTime<Local>, last_run_at: Option<u64>) -> bool {
     // If never run, check if next scheduled time is in the past or now
     if last_run_at.is_none() {
-        return schedule.upcoming(Local).take(1).next().is_some_and(|next| next <= *now);
+        return schedule
+            .upcoming(Local)
+            .take(1)
+            .next()
+            .is_some_and(|next| next <= *now);
     }
 
     let last_run_ts = last_run_at.unwrap();
