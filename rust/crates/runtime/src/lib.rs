@@ -10,6 +10,7 @@ pub mod bash_validation;
 mod bootstrap;
 pub mod branch_lock;
 pub mod lane_store;
+pub mod retry;
 mod compact;
 mod config;
 pub mod config_validate;
@@ -200,6 +201,9 @@ pub use api_server::{
     ObserveScreenRequest, SendPromptRequest,
 };
 pub use lane_store::{LaneState, LaneStore, LaneStoreError};
+pub use retry::{
+    retry_with_policy, ClassifyRetryError, RetryConfig, RetryErrorClass, RetryPolicy, RetryResult,
+};
 
 #[cfg(test)]
 pub(crate) fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
