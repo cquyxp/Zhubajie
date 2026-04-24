@@ -1,0 +1,28 @@
+__pycache__/
+archive/
+.omx/
+.clawd-agents/
+# Claude Code local artifacts
+.claude/settings.local.json
+.claude/sessions/
+# Claw Code local artifacts
+.claw/settings.local.json
+.claw/sessions/
+.clawhip/
+status-help.txt
+# Local source code folder
+claude-code源代码/
+# Local analysis docs (not for remote)
+CLAUDE-CODE-ARCHITECTURE-ANALYSIS.md
+CLAUDE-CODE-FEATURE-GAPS.md
+CLAUDE.md
+# Rust target directory
+rust/target/
+# Session files
+**/.claw/sessions/
+**/.claude/sessions/
+**/.clawd-todos.json
+# Sandbox
+rust/.sandbox-home/
+# OMC
+.omc/
