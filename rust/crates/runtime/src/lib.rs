@@ -9,7 +9,9 @@ pub mod api_server;
 pub mod bash_validation;
 mod bootstrap;
 pub mod branch_lock;
+pub mod error_guide;
 pub mod lane_store;
+pub mod onboarding;
 pub mod retry;
 mod compact;
 mod config;
@@ -204,6 +206,8 @@ pub use lane_store::{LaneState, LaneStore, LaneStoreError};
 pub use retry::{
     retry_with_policy, ClassifyRetryError, RetryConfig, RetryErrorClass, RetryPolicy, RetryResult,
 };
+pub use error_guide::{ErrorGuide, GuidedError, QuickstartGuide};
+pub use onboarding::{OnboardingGuide, OnboardingState, PromptTemplates};
 
 #[cfg(test)]
 pub(crate) fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
