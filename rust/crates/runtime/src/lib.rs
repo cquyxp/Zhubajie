@@ -9,6 +9,7 @@ pub mod api_server;
 pub mod bash_validation;
 mod bootstrap;
 pub mod branch_lock;
+pub mod lane_store;
 mod compact;
 mod config;
 pub mod config_validate;
@@ -198,6 +199,7 @@ pub use api_server::{
     create_router, start_server, ApiResponse, ApiServerState, CreateWorkerRequest,
     ObserveScreenRequest, SendPromptRequest,
 };
+pub use lane_store::{LaneState, LaneStore, LaneStoreError};
 
 #[cfg(test)]
 pub(crate) fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
