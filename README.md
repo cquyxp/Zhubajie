@@ -6,8 +6,8 @@
   </p>
   
   <p>
-    <a href="https://github.com/cquyxp/bajie">
-      <img src="https://img.shields.io/badge/github-cquyxp%2Fbajie-blue?style=flat-square&logo=github" alt="GitHub" />
+    <a href="https://github.com/cquyxp/Zhubajie">
+      <img src="https://img.shields.io/badge/github-cquyxp%2FZhubajie-blue?style=flat-square&logo=github" alt="GitHub" />
     </a>
     <a href="./rust">
       <img src="https://img.shields.io/badge/rust-workspace-orange?style=flat-square&logo=rust" alt="Rust" />
@@ -55,8 +55,8 @@ Claw Code是一个用Rust重写的高性能AI Agent命令行工具。它提供�
 ### 1. 克隆并构建
 
 ```bash
-git clone https://github.com/cquyxp/bajie
-cd bajie/rust
+git clone https://github.com/cquyxp/Zhubajie
+cd Zhubajie/rust
 cargo build --workspace
 ```
 
@@ -102,7 +102,7 @@ $env:ANTHROPIC_API_KEY = "sk-ant-..."
 ## 项目结构
 
 ```text
-claw-code/
+Zhubajie/
 ├── rust/
 │   ├── Cargo.toml              # Workspace配置
 │   └── crates/
