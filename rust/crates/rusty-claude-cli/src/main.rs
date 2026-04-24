@@ -55,7 +55,7 @@ use runtime::{
     ConversationRuntime, McpServer, McpServerManager, McpServerSpec, McpTool, MessageRole,
     ModelPricing, PermissionMode, PermissionPolicy, ProjectContext, PromptCacheEvent,
     ResolvedPermissionMode, RuntimeError, Session, TokenUsage, ToolError, ToolExecutor,
-    TrustConfig, TrustResolver, UsageTracker,
+    TrustConfig, TrustResolver, UsageTracker, WorkerRegistry,
 };
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -190,6 +190,7 @@ fn merge_prompt_with_stdin(prompt: &str, stdin_content: Option<&str>) -> String 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
     match parse_args(&args)? {
+        CliAction::Server { port, output_format } => run_server(port, output_format)?,
         CliAction::DumpManifests {
             output_format,
             manifests_dir,
@@ -373,6 +374,10 @@ enum CliAction {
     HelpTopic(LocalHelpTopic),
     // prompt-mode formatting is only supported for non-interactive runs
     Help {
+        output_format: CliOutputFormat,
+    },
+    Server {
+        port: u16,
         output_format: CliOutputFormat,
     },
 }
@@ -649,6 +654,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
     let permission_mode = permission_mode_override.unwrap_or_else(default_permission_mode);
 
     match rest[0].as_str() {
+        "server" => parse_server_args(&rest[1..], output_format),
         "dump-manifests" => parse_dump_manifests_args(&rest[1..], output_format),
         "bootstrap-plan" => Ok(CliAction::BootstrapPlan { output_format }),
         "agents" => Ok(CliAction::Agents {
@@ -1284,6 +1290,33 @@ fn parse_dump_manifests_args(
     })
 }
 
+fn parse_server_args(args: &[String], output_format: CliOutputFormat) -> Result<CliAction, String> {
+    let mut port: u16 = 8080;
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        if arg == "--port" || arg == "-p" {
+            let value = args
+                .get(index + 1)
+                .ok_or_else(|| String::from("--port requires a number"))?;
+            port = value.parse().map_err(|_| String::from("--port must be a number"))?;
+            index += 2;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--port=") {
+            port = value.parse().map_err(|_| String::from("--port must be a number"))?;
+            index += 1;
+            continue;
+        }
+        return Err(format!("unknown server option: {arg}"));
+    }
+
+    Ok(CliAction::Server {
+        port,
+        output_format,
+    })
+}
+
 fn parse_resume_args(args: &[String], output_format: CliOutputFormat) -> Result<CliAction, String> {
     let (session_path, command_tokens): (PathBuf, &[String]) = match args.first() {
         None => (PathBuf::from(LATEST_SESSION_REFERENCE), &[]),
@@ -1534,6 +1567,25 @@ fn run_doctor(output_format: CliOutputFormat) -> Result<(), Box<dyn std::error::
     if report.has_failures() {
         return Err("doctor found failing checks".into());
     }
+    Ok(())
+}
+
+fn run_server(port: u16, output_format: CliOutputFormat) -> Result<(), Box<dyn std::error::Error>> {
+    let registry = WorkerRegistry::new();
+
+    match output_format {
+        CliOutputFormat::Text => println!("Starting Zhubajie API server on port {port}..."),
+        CliOutputFormat::Json => println!("{}", serde_json::json!({
+            "type": "server_start",
+            "port": port
+        })),
+    }
+
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        runtime::api_server::start_server(registry, port).await
+    })?;
+
     Ok(())
 }
 

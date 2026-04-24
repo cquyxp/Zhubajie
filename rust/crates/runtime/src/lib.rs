@@ -5,6 +5,7 @@
 //! that drives interactive and one-shot turns.
 
 mod bash;
+pub mod api_server;
 pub mod bash_validation;
 mod bootstrap;
 pub mod branch_lock;
@@ -192,6 +193,10 @@ pub use usage::{
 pub use worker_boot::{
     Worker, WorkerEvent, WorkerEventKind, WorkerEventPayload, WorkerFailure, WorkerFailureKind,
     WorkerPromptTarget, WorkerReadySnapshot, WorkerRegistry, WorkerStatus, WorkerTrustResolution,
+};
+pub use api_server::{
+    create_router, start_server, ApiResponse, ApiServerState, CreateWorkerRequest,
+    ObserveScreenRequest, SendPromptRequest,
 };
 
 #[cfg(test)]
