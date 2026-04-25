@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use api::{
     max_tokens_for_model, resolve_model_alias, ApiError, ContentBlockDelta, InputContentBlock,
-    InputMessage, MessageRequest, MessageResponse, OutputContentBlock, ProviderClient,
+    InputMessage, MessageRequest, MessageResponse as ApiMessageResponse, OutputContentBlock, ProviderClient,
     StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition, ToolResultContentBlock,
 };
 use plugins::PluginTool;
@@ -24,9 +24,9 @@ use runtime::{
     write_file, ApiClient, ApiRequest, AssistantEvent, BashCommandInput, BashCommandOutput,
     BranchFreshness, ConfigLoader, ContentBlock, ConversationMessage, ConversationRuntime,
     GrepSearchInput, LaneCommitProvenance, LaneEvent, LaneEventBlocker, LaneEventName,
-    LaneEventStatus, LaneFailureClass, McpDegradedReport, MessageRole, PermissionMode,
+    LaneEventStatus, LaneFailureClass, McpDegradedReport, MessageResponse, MessageRole, PermissionMode,
     PermissionPolicy, PromptCacheEvent, ProviderFallbackConfig, RuntimeError, Session, TaskPacket,
-    ToolError, ToolExecutor,
+    TokenUsage, ToolError, ToolExecutor,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -4612,6 +4612,27 @@ impl ApiClient for ProviderRuntimeClient {
             |error| error.to_string(),
         )))
     }
+
+    fn send_message(&mut self, request: ApiRequest) -> Result<MessageResponse, RuntimeError> {
+        let events = self.stream(request)?;
+
+        let mut content = String::new();
+        let mut usage = None;
+
+        for event in events {
+            match event {
+                AssistantEvent::TextDelta(text) => content.push_str(&text),
+                AssistantEvent::Usage(u) => usage = Some(u),
+                _ => {}
+            }
+        }
+
+        Ok(MessageResponse {
+            content,
+            usage: usage.unwrap_or_default(),
+            model: "".to_string(),
+        })
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -4807,7 +4828,7 @@ fn push_output_block(
     }
 }
 
-fn response_to_events(response: MessageResponse) -> Vec<AssistantEvent> {
+fn response_to_events(response: ApiMessageResponse) -> Vec<AssistantEvent> {
     let mut events = Vec::new();
     let mut pending_tools = BTreeMap::new();
 

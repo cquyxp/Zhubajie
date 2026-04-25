@@ -28,10 +28,9 @@ pub fn get_hostname() -> String {
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::bridge::types::{BridgeConfig, SpawnMode, WorkResponse, WorkSecret};
 
 /// Bridge runtime error
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum BridgeError {
     #[error("Fatal bridge error: {0}")]
     Fatal(#[from] BridgeFatalError),

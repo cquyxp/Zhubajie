@@ -161,96 +161,6 @@ pub fn get_compact_continuation_message(
     base
 }
 
-/// Compacts a session by summarizing older messages and preserving the recent tail.
-#[must_use]
-pub fn compact_session(session: &Session, config: CompactionConfig) -> CompactionResult {
-    if !should_compact(session, config) {
-        return CompactionResult {
-            summary: String::new(),
-            formatted_summary: String::new(),
-            compacted_session: session.clone(),
-            removed_message_count: 0,
-        };
-    }
-
-    let existing_summary = session
-        .messages
-        .first()
-        .and_then(extract_existing_compacted_summary);
-    let compacted_prefix_len = usize::from(existing_summary.is_some());
-    let raw_keep_from = session
-        .messages
-        .len()
-        .saturating_sub(config.preserve_recent_messages);
-    // Ensure we do not split a tool-use / tool-result pair at the compaction
-    // boundary. If the first preserved message is a user message whose first
-    // block is a ToolResult, the assistant message with the matching ToolUse
-    // was slated for removal — that produces an orphaned tool role message on
-    // the OpenAI-compat path (400: tool message must follow assistant with
-    // tool_calls). Walk the boundary back until we start at a safe point.
-    let keep_from = {
-        let mut k = raw_keep_from;
-        // If the first preserved message is a tool-result turn, ensure its
-        // paired assistant tool-use turn is preserved too. Without this fix,
-        // the OpenAI-compat adapter sends an orphaned 'tool' role message
-        // with no preceding assistant 'tool_calls', which providers reject
-        // with a 400. We walk back only if the immediately preceding message
-        // is NOT an assistant message that contains a ToolUse block (i.e. the
-        // pair is actually broken at the boundary).
-        loop {
-            if k == 0 || k <= compacted_prefix_len {
-                break;
-            }
-            let first_preserved = &session.messages[k];
-            let starts_with_tool_result = first_preserved
-                .blocks
-                .first()
-                .is_some_and(|b| matches!(b, ContentBlock::ToolResult { .. }));
-            if !starts_with_tool_result {
-                break;
-            }
-            // Check the message just before the current boundary.
-            let preceding = &session.messages[k - 1];
-            let preceding_has_tool_use = preceding
-                .blocks
-                .iter()
-                .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
-            if preceding_has_tool_use {
-                // Pair is intact — walk back one more to include the assistant turn.
-                k = k.saturating_sub(1);
-                break;
-            }
-            // Preceding message has no ToolUse but we have a ToolResult —
-            // this is already an orphaned pair; walk back to try to fix it.
-            k = k.saturating_sub(1);
-        }
-        k
-    };
-    let removed = &session.messages[compacted_prefix_len..keep_from];
-    let preserved = session.messages[keep_from..].to_vec();
-    let summary =
-        merge_compact_summaries(existing_summary.as_deref(), &summarize_messages(removed));
-    let formatted_summary = format_compact_summary(&summary);
-    let continuation = get_compact_continuation_message(&summary, true, !preserved.is_empty());
-
-    let mut compacted_messages = vec![ConversationMessage {
-        role: MessageRole::System,
-        blocks: vec![ContentBlock::Text { text: continuation }],
-        usage: None,
-    }];
-    compacted_messages.extend(preserved);
-
-    let mut compacted_session = session.clone();
-    compacted_session.messages = compacted_messages;
-    compacted_session.record_compaction(summary.clone(), removed.len());
-
-    CompactionResult {
-        summary,
-        formatted_summary,
-        compacted_session,
-        removed_message_count: removed.len(),
-    }
-}
 
 fn compacted_summary_prefix_len(session: &Session) -> usize {
     usize::from(
@@ -653,10 +563,6 @@ fn ensure_tool_result_pairing(
     keep_from
 }
 
-/// Trait for API client that can send non-streaming requests
-pub trait ApiClient {
-    fn send_message(&mut self, request: ApiRequest) -> Result<MessageResponse, RuntimeError>;
-}
 
 /// Multi-mode session compression entry point
 pub fn compact_session(
@@ -664,7 +570,7 @@ pub fn compact_session(
     config: CompactionConfig,
     mode: CompactionMode,
     llm_config: Option<LlmCompactionConfig>,
-    api_client: Option<&mut dyn ApiClient>,
+    api_client: Option<&mut dyn crate::conversation::ApiClient>,
 ) -> CompactionResult {
     match mode {
         CompactionMode::Heuristic => compact_session_heuristic(session, config),
@@ -735,7 +641,7 @@ fn compact_session_llm_or_fallback(
     session: &Session,
     config: CompactionConfig,
     llm_config: Option<LlmCompactionConfig>,
-    api_client: Option<&mut dyn ApiClient>,
+    api_client: Option<&mut dyn crate::conversation::ApiClient>,
     use_fallback: bool,
 ) -> CompactionResult {
     let llm_config = match llm_config {

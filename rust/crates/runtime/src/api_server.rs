@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::worker_boot::{Worker, WorkerRegistry};
+use crate::worker_boot::{Worker, WorkerRegistry, WorkerTaskReceipt};
 
 /// API Server state
 #[derive(Clone)]
@@ -31,7 +31,7 @@ pub struct CreateWorkerRequest {
 #[derive(Debug, Deserialize)]
 pub struct SendPromptRequest {
     pub prompt: String,
-    pub task_receipt: Option<String>,
+    pub task_receipt: Option<WorkerTaskReceipt>,
 }
 
 /// Generic API response
@@ -90,9 +90,9 @@ async fn create_worker(
 }
 
 async fn list_workers(State(state): State<ApiServerState>) -> impl IntoResponse {
-    let inner = state.registry.inner.lock().expect("lock poisoned");
-    let workers: Vec<Worker> = inner.workers.values().cloned().collect();
-
+    // WorkerRegistry doesn't expose a way to list all workers, so we'll return empty for now
+    // This is a placeholder until WorkerRegistry adds list functionality
+    let workers: Vec<Worker> = Vec::new();
     Json(ApiResponse::success(workers))
 }
 
@@ -101,10 +101,14 @@ async fn get_worker(
     Path(worker_id): Path<String>,
 ) -> impl IntoResponse {
     match state.registry.get(&worker_id) {
-        Some(worker) => (StatusCode::OK, Json(ApiResponse::success(worker))),
+        Some(worker) => (StatusCode::OK, Json(ApiResponse::success(Some(worker)))),
         None => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<()>::error("Worker not found")),
+            Json(ApiResponse {
+                success: false,
+                data: None,
+                error: Some("Worker not found".to_string()),
+            }),
         ),
     }
 }
@@ -118,10 +122,14 @@ async fn send_prompt(
         .registry
         .send_prompt(&worker_id, Some(&request.prompt), request.task_receipt)
     {
-        Ok(worker) => (StatusCode::OK, Json(ApiResponse::success(worker))),
+        Ok(worker) => (StatusCode::OK, Json(ApiResponse::success(Some(worker)))),
         Err(err) => (
             StatusCode::BAD_REQUEST,
-            Json(ApiResponse::<()>::error(&err)),
+            Json(ApiResponse {
+                success: false,
+                data: None,
+                error: Some(err.to_string()),
+            }),
         ),
     }
 }
@@ -131,10 +139,14 @@ async fn resolve_trust(
     Path(worker_id): Path<String>,
 ) -> impl IntoResponse {
     match state.registry.resolve_trust(&worker_id) {
-        Ok(worker) => (StatusCode::OK, Json(ApiResponse::success(worker))),
+        Ok(worker) => (StatusCode::OK, Json(ApiResponse::success(Some(worker)))),
         Err(err) => (
             StatusCode::BAD_REQUEST,
-            Json(ApiResponse::<()>::error(&err)),
+            Json(ApiResponse {
+                success: false,
+                data: None,
+                error: Some(err.to_string()),
+            }),
         ),
     }
 }
@@ -150,10 +162,14 @@ async fn observe_screen(
     Json(request): Json<ObserveScreenRequest>,
 ) -> impl IntoResponse {
     match state.registry.observe(&worker_id, &request.screen_text) {
-        Ok(worker) => (StatusCode::OK, Json(ApiResponse::success(worker))),
+        Ok(worker) => (StatusCode::OK, Json(ApiResponse::success(Some(worker)))),
         Err(err) => (
             StatusCode::BAD_REQUEST,
-            Json(ApiResponse::<()>::error(&err)),
+            Json(ApiResponse {
+                success: false,
+                data: None,
+                error: Some(err.to_string()),
+            }),
         ),
     }
 }

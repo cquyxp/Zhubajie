@@ -3,7 +3,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
+use http::Request;
+use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
@@ -230,7 +232,7 @@ impl SessionIngress {
         match serde_json::from_str::<IncomingMessage>(text) {
             Ok(msg) => match msg.msg_type.as_str() {
                 "user_input" => {
-                    if let Some(data) = msg.data {
+                    if let Some(ref data) = msg.data {
                         if let Some(text) = data.as_str() {
                             return IngressEvent::UserInput(text.to_string());
                         } else if let Some(input) = data.get("text").and_then(|t| t.as_str()) {
@@ -240,15 +242,15 @@ impl SessionIngress {
                     IngressEvent::Raw(serde_json::json!({ "type": msg.msg_type, "data": msg.data }))
                 }
                 "control_command" => {
-                    if let Some(data) = msg.data {
-                        let cmd = Self::parse_control_command(&data);
+                    if let Some(ref data) = msg.data {
+                        let cmd = Self::parse_control_command(data);
                         return IngressEvent::ControlCommand(cmd);
                     }
                     IngressEvent::Raw(serde_json::json!({ "type": msg.msg_type, "data": msg.data }))
                 }
                 "permission_request" => {
-                    if let Some(data) = msg.data {
-                        if let Ok(req) = serde_json::from_value::<PermissionRequest>(data) {
+                    if let Some(ref data) = msg.data {
+                        if let Ok(req) = serde_json::from_value::<PermissionRequest>(data.clone()) {
                             return IngressEvent::PermissionRequest(req);
                         }
                     }

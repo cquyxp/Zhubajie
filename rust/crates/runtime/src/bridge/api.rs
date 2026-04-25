@@ -115,7 +115,7 @@ pub fn validate_bridge_id(id: &str, label: &str) -> Result<(), String> {
 }
 
 /// Bridge API client implementation
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct BridgeHttpClient {
     base_url: url::Url,
     client: reqwest::Client,
@@ -124,6 +124,20 @@ pub struct BridgeHttpClient {
     on_auth_401: Option<Arc<dyn Fn(String) -> bool + Send + Sync>>,
     get_trusted_device_token: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
     on_debug: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+}
+
+impl std::fmt::Debug for BridgeHttpClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BridgeHttpClient")
+            .field("base_url", &self.base_url)
+            .field("client", &self.client)
+            .field("runner_version", &self.runner_version)
+            .field("get_access_token", &"<callback>")
+            .field("on_auth_401", &self.on_auth_401.as_ref().map(|_| "<callback>"))
+            .field("get_trusted_device_token", &self.get_trusted_device_token.as_ref().map(|_| "<callback>"))
+            .field("on_debug", &self.on_debug.as_ref().map(|_| "<callback>"))
+            .finish()
+    }
 }
 
 impl BridgeHttpClient {

@@ -150,7 +150,7 @@ impl LaneStore {
 
     /// List all lanes in the store.
     pub fn list_lanes(&self) -> Result<Vec<LaneState>, LaneStoreError> {
-        let mut lanes = Vec::new();
+        let mut lanes: Vec<LaneState> = Vec::new();
         if let Ok(entries) = fs::read_dir(&self.lanes_root) {
             for entry in entries.flatten() {
                 let path = entry.path();

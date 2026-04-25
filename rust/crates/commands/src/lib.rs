@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use plugins::{PluginError, PluginLoadFailure, PluginManager, PluginSummary};
 use runtime::{
-    compact_session, CompactionConfig, ConfigLoader, ConfigSource, McpOAuthConfig, McpServerConfig,
+    compact_session_legacy, CompactionConfig, ConfigLoader, ConfigSource, McpOAuthConfig, McpServerConfig,
     ScopedMcpServerConfig, Session,
 };
 use serde_json::{json, Value};
@@ -4057,7 +4057,7 @@ pub fn handle_slash_command(
 
     match command {
         SlashCommand::Compact => {
-            let result = compact_session(session, compaction);
+            let result = compact_session_legacy(session, compaction);
             let message = if result.removed_message_count == 0 {
                 "Compaction skipped: session is below the compaction threshold.".to_string()
             } else {

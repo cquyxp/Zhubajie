@@ -43,10 +43,11 @@ use plugins::{PluginHooks, PluginManager, PluginManagerConfig, PluginRegistry};
 use render::{MarkdownStreamState, Spinner, TerminalRenderer};
 use runtime::bridge::{
     validate_bridge_id, BridgeApiClient, BridgeConfig, BridgeHttpClient, BridgeLoopEvent,
-    BridgeLoopOptions, BridgeManager, BridgeRuntime, BridgeState as _, BridgeWorkerType,
-    IngressConfig, IngressEvent, IngressSender, SessionCreateError, SessionIngress, SessionSpawner,
-    SpawnMode, SpawnedSession, WorkResponse, WorkSecret,
+    BridgeLoopOptions, BridgeManager, BridgeRuntime, BridgeWorkerType,
+    SpawnMode, WorkResponse, WorkSecret,
 };
+use runtime::bridge::ingress::{IngressConfig, IngressEvent, IngressSender, SessionIngress};
+use runtime::bridge::session::{SessionCreateError, SessionSpawner, SpawnedSession};
 use runtime::{
     check_base_commit, check_freshness, format_stale_base_warning, format_usd,
     load_oauth_credentials, load_system_prompt, pricing_for_model, resolve_expected_base,
@@ -58,7 +59,7 @@ use runtime::{
     ToolExecutor, TrustConfig, TrustResolver, UsageTracker, WorkerRegistry,
 };
 
-use runtime::telegram::{TelegramConfig, TelegramRuntime};
+use runtime::telegram::{ChatId, MessageHandler, TelegramConfig, TelegramRuntime};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use tools::{
@@ -1377,7 +1378,7 @@ fn parse_telegram_args(args: &[String], output_format: CliOutputFormat) -> Resul
             continue;
         }
         if arg == "--danger-full-access" {
-            permission_mode_override = Some(PermissionMode::FullAccess);
+            permission_mode_override = Some(PermissionMode::DangerFullAccess);
             index += 1;
             continue;
         }
@@ -1394,10 +1395,13 @@ fn parse_telegram_args(args: &[String], output_format: CliOutputFormat) -> Resul
         mode
     } else {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let config = ConfigLoader::discover(&cwd).ok().and_then(|loader| loader.load().ok());
-        config
-            .and_then(|c| c.permission_mode())
-            .unwrap_or(PermissionMode::ReadOnly)
+        let config = ConfigLoader::default_for(&cwd).load().ok();
+        match config.and_then(|c| c.permission_mode()) {
+            Some(ResolvedPermissionMode::ReadOnly) => PermissionMode::ReadOnly,
+            Some(ResolvedPermissionMode::WorkspaceWrite) => PermissionMode::WorkspaceWrite,
+            Some(ResolvedPermissionMode::DangerFullAccess) => PermissionMode::DangerFullAccess,
+            None => PermissionMode::ReadOnly,
+        }
     };
 
     Ok(CliAction::Telegram {
@@ -1743,7 +1747,7 @@ impl MessageHandler for ClawMessageHandler {
         let session_id = Uuid::new_v4().to_string();
 
         // Build the runtime
-        let built_runtime = build_runtime_with_plugin_state(
+        let mut built_runtime = build_runtime_with_plugin_state(
             session.clone(),
             &session_id,
             self.model.clone(),
@@ -1756,10 +1760,10 @@ impl MessageHandler for ClawMessageHandler {
             self.runtime_plugin_state.clone(),
         ).map_err(|e| format!("Failed to build runtime: {}", e))?;
 
-        let mut runtime = built_runtime.runtime;
+        let mut runtime = built_runtime.runtime.take().expect("runtime should exist while built runtime is alive");
 
         // Run a turn
-        let turn_result = runtime.run_turn(text).await;
+        let turn_result = runtime.run_turn(text, None);
 
         // Update the session
         *session = runtime.into_session();
@@ -1799,7 +1803,6 @@ async fn run_telegram(
     output_format: CliOutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut config = TelegramConfig::new(token);
-    config.allowed_users = allowed_users;
 
     match output_format {
         CliOutputFormat::Text => println!("Starting Telegram bot..."),
@@ -1810,10 +1813,12 @@ async fn run_telegram(
         })),
     }
 
+    config.allowed_users = allowed_users;
+
     // Build system prompt
     let cwd = std::env::current_dir()?;
     let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    let system_prompt = load_system_prompt(&cwd, &date, None::<PathBuf>)?;
+    let system_prompt = load_system_prompt(&cwd, &date, std::env::consts::OS, "")?;
 
     // Build plugin state
     let runtime_plugin_state = build_runtime_plugin_state()?;
@@ -2345,7 +2350,7 @@ fn check_plugin_mcp_health(config: Option<&runtime::RuntimeConfig>) -> Diagnosti
 
     let mut details = vec![format!("MCP servers      {}", mcp_servers.len())];
     for (name, cfg) in mcp_servers {
-        details.push(format!("  - {name} ({})", cfg.transport()));
+        details.push(format!("  - {name} ({:#?})", cfg.transport()));
     }
 
     if !enabled_plugins.is_empty() {
@@ -3127,7 +3132,7 @@ fn run_resume_command(
             json: Some(serde_json::json!({ "kind": "help", "text": render_repl_help() })),
         }),
         SlashCommand::Compact => {
-            let result = runtime::compact_session(
+            let result = runtime::compact_session_legacy(
                 session,
                 CompactionConfig {
                     max_estimated_tokens: 0,
@@ -3447,7 +3452,8 @@ fn run_resume_command(
         | SlashCommand::Ide { .. }
         | SlashCommand::Tag { .. }
         | SlashCommand::OutputStyle { .. }
-        | SlashCommand::AddDir { .. } => Err("unsupported resumed slash command".into()),
+        | SlashCommand::AddDir { .. }
+        | SlashCommand::RemoteControl { .. } => Err("unsupported resumed slash command".into()),
     }
 }
 
@@ -3648,18 +3654,13 @@ struct BridgeState {
     target_session_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Default)]
-struct BridgeState {
-    is_running: bool,
-    environment_id: Option<String>,
-}
-
 #[derive(Debug, Clone)]
 struct PromptHistoryEntry {
     timestamp_ms: u64,
     text: String,
 }
 
+#[derive(Clone)]
 struct RuntimePluginState {
     feature_config: runtime::RuntimeFeatureConfig,
     tool_registry: GlobalToolRegistry,
@@ -4340,7 +4341,7 @@ impl LiveCli {
                 "message": final_assistant_text(&summary),
                 "model": self.model,
                 "iterations": summary.iterations,
-                "auto_compaction": summary.auto_compaction.map(|event| json!({
+                "auto_compaction": summary.auto_compaction.as_ref().map(|event| json!({
                     "removed_messages": event.removed_message_count,
                     "notice": format_auto_compaction_notice(event.removed_message_count),
                 })),
@@ -7670,6 +7671,8 @@ impl ApiClient for AnthropicRuntimeClient {
         let usage = runtime::TokenUsage {
             input_tokens: response.usage.input_tokens,
             output_tokens: response.usage.output_tokens,
+            cache_creation_input_tokens: response.usage.cache_creation_input_tokens,
+            cache_read_input_tokens: response.usage.cache_read_input_tokens,
         };
 
         Ok(runtime::MessageResponse {

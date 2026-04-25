@@ -2160,6 +2160,7 @@ dependencies = [
  "cron",
  "futures-util",
  "glob",
+ "http 1.4.0",
  "plugins",
  "rand 0.8.6",
  "regex",
@@ -2322,6 +2323,7 @@ name = "rusty-claude-cli"
 version = "0.1.0"
 dependencies = [
  "api",
+ "chrono",
  "commands",
  "compat-harness",
  "crossterm",
