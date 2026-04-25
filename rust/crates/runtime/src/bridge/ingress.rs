@@ -1,10 +1,8 @@
 //! Session Ingress for receiving events from claude.ai
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use http::Request;
 use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
@@ -142,10 +140,10 @@ impl SessionIngress {
 
     /// Connect to the ingress endpoint
     pub async fn connect(&mut self) -> Result<(), IngressError> {
-        let url = url::Url::parse(&self.config.ingress_url)
+        let _url = url::Url::parse(&self.config.ingress_url)
             .map_err(|e| IngressError::WebSocket(format!("Invalid URL: {}", e)))?;
 
-        let mut request = http::Request::builder()
+        let request = http::Request::builder()
             .uri(&self.config.ingress_url)
             .header(
                 "Authorization",
@@ -174,7 +172,7 @@ impl SessionIngress {
                 .map_err(|e| IngressError::Send(e.to_string()))?;
         }
 
-        let (write, read) = ws_stream.split();
+        let (_write, read) = ws_stream.split();
         let sender = self.event_sender.clone();
 
         // Spawn read task
@@ -219,7 +217,7 @@ impl SessionIngress {
                     }
                     break;
                 }
-                Err(e) => {
+                Err(_e) => {
                     break;
                 }
                 _ => {}

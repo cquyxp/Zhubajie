@@ -36,6 +36,7 @@ impl From<MessageId> for i32 {
 
 /// A Telegram update (message or callback query)
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum TelegramUpdate {
     /// A text message
     Message {

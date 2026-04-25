@@ -16,6 +16,7 @@ struct BridgeState {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct ActiveSession {
     session_id: String,
     work_id: String,

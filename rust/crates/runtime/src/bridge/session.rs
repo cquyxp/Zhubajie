@@ -2,11 +2,10 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::bridge::types::{AuthConfig, GitInfo, SourceConfig, SpawnMode, WorkSecret};
+use crate::bridge::types::{GitInfo, SpawnMode, WorkSecret};
 use crate::session::Session;
 
 /// Session creation error
@@ -317,6 +316,7 @@ impl SpawnedSession {
 
 /// Session cleanup strategy
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum SessionCleanup {
     /// Clean up a git worktree
     Worktree,

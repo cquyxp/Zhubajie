@@ -5,12 +5,12 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use chrono::{DateTime, Duration as ChronoDuration, Local, TimeZone};
+use chrono::{DateTime, Local, TimeZone};
 use cron::Schedule;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
-use crate::team_cron_registry::{CronEntry, CronRegistry};
+use crate::team_cron_registry::CronRegistry;
 
 /// Event emitted by the cron scheduler.
 #[derive(Debug, Clone)]
@@ -112,7 +112,7 @@ impl CronScheduler {
             let _ = shutdown_tx.send(());
         }
 
-        if let Some(join_handle) = inner.join_handle.take() {
+        if let Some(_join_handle) = inner.join_handle.take() {
             // We don't wait for the handle to complete, just drop it
             // The task will exit on its own
         }

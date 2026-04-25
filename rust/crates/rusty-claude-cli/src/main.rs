@@ -2278,7 +2278,7 @@ fn check_branch_freshness(context: &StatusContext) -> DiagnosticCheck {
     };
 
     let freshness = check_freshness(branch, "origin/main");
-    let (level, summary, mut details) = match &freshness {
+    let (level, summary, details) = match &freshness {
         BranchFreshness::Fresh => (
             DiagnosticLevel::Ok,
             "branch is up to date with origin/main".to_string(),

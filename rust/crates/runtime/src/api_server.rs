@@ -8,8 +8,6 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use tokio::sync::Mutex;
 
 use crate::worker_boot::{Worker, WorkerRegistry, WorkerTaskReceipt};
 
@@ -50,14 +48,6 @@ impl<T> ApiResponse<T> {
             error: None,
         }
     }
-
-    fn error(message: &str) -> Self {
-        Self {
-            success: false,
-            data: None,
-            error: Some(message.to_string()),
-        }
-    }
 }
 
 /// Create a new API server router
@@ -89,7 +79,7 @@ async fn create_worker(
     (StatusCode::CREATED, Json(ApiResponse::success(worker)))
 }
 
-async fn list_workers(State(state): State<ApiServerState>) -> impl IntoResponse {
+async fn list_workers(State(_state): State<ApiServerState>) -> impl IntoResponse {
     // WorkerRegistry doesn't expose a way to list all workers, so we'll return empty for now
     // This is a placeholder until WorkerRegistry adds list functionality
     let workers: Vec<Worker> = Vec::new();

@@ -65,6 +65,7 @@ impl Default for BridgeLoopOptions {
 
 /// Bridge runtime for managing the complete Remote Control lifecycle
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct BridgeRuntime {
     manager: Arc<BridgeManager>,
     config: BridgeConfig,

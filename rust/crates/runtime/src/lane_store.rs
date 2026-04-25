@@ -2,7 +2,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::lane_events::{LaneEvent, LaneEventBuilder, LaneEventName, LaneEventStatus};
+use crate::lane_events::{LaneEvent, LaneEventStatus};
 use crate::session_control::workspace_fingerprint;
 use serde::{Deserialize, Serialize};
 

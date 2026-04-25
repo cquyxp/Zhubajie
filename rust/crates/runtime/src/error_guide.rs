@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// 带有修复建议的错误信息
 #[derive(Debug, Clone)]
