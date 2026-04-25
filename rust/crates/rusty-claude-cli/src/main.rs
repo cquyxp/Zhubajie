@@ -54,9 +54,11 @@ use runtime::{
     CompactionConfig, ConfigLoader, ConfigSource, ContentBlock, ConversationMessage,
     ConversationRuntime, McpServer, McpServerManager, McpServerSpec, McpTool, MessageRole,
     ModelPricing, PermissionMode, PermissionPolicy, ProjectContext, PromptCacheEvent,
-    ResolvedPermissionMode, RuntimeError, Session, TokenUsage, ToolError, ToolExecutor,
-    TrustConfig, TrustResolver, UsageTracker, WorkerRegistry,
+    ResolvedPermissionMode, RuntimeError, Session, SessionStore, TokenUsage, ToolError,
+    ToolExecutor, TrustConfig, TrustResolver, UsageTracker, WorkerRegistry,
 };
+
+use runtime::telegram::{TelegramConfig, TelegramRuntime};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use tools::{
@@ -190,6 +192,18 @@ fn merge_prompt_with_stdin(prompt: &str, stdin_content: Option<&str>) -> String 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
     match parse_args(&args)? {
+        CliAction::Telegram {
+            token,
+            allowed_users,
+            model,
+            permission_mode,
+            output_format,
+        } => {
+            let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            tokio_runtime.block_on(run_telegram(token, allowed_users, model, permission_mode, output_format))?;
+        }
         CliAction::Server { port, output_format } => run_server(port, output_format)?,
         CliAction::DumpManifests {
             output_format,
@@ -378,6 +392,13 @@ enum CliAction {
     },
     Server {
         port: u16,
+        output_format: CliOutputFormat,
+    },
+    Telegram {
+        token: String,
+        allowed_users: Vec<u64>,
+        model: String,
+        permission_mode: PermissionMode,
         output_format: CliOutputFormat,
     },
 }
@@ -654,6 +675,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
     let permission_mode = permission_mode_override.unwrap_or_else(default_permission_mode);
 
     match rest[0].as_str() {
+        "telegram" => parse_telegram_args(&rest[1..], output_format),
         "server" => parse_server_args(&rest[1..], output_format),
         "dump-manifests" => parse_dump_manifests_args(&rest[1..], output_format),
         "bootstrap-plan" => Ok(CliAction::BootstrapPlan { output_format }),
@@ -1290,6 +1312,103 @@ fn parse_dump_manifests_args(
     })
 }
 
+fn parse_telegram_args(args: &[String], output_format: CliOutputFormat) -> Result<CliAction, String> {
+    let mut token = None;
+    let mut allowed_users = Vec::new();
+    let mut model = DEFAULT_MODEL.to_string();
+    let mut permission_mode_override = None;
+    let mut index = 0;
+
+    while index < args.len() {
+        let arg = &args[index];
+        if arg == "--token" || arg == "-t" {
+            let value = args
+                .get(index + 1)
+                .ok_or_else(|| String::from("--token requires a bot token"))?;
+            token = Some(value.clone());
+            index += 2;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--token=") {
+            token = Some(value.to_string());
+            index += 1;
+            continue;
+        }
+        if arg == "--allowed-users" || arg == "-a" {
+            let value = args
+                .get(index + 1)
+                .ok_or_else(|| String::from("--allowed-users requires comma-separated user IDs"))?;
+            allowed_users = value
+                .split(',')
+                .filter_map(|s| s.trim().parse::<u64>().ok())
+                .collect();
+            index += 2;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--allowed-users=") {
+            allowed_users = value
+                .split(',')
+                .filter_map(|s| s.trim().parse::<u64>().ok())
+                .collect();
+            index += 1;
+            continue;
+        }
+        if arg == "--model" || arg == "-m" {
+            let value = args
+                .get(index + 1)
+                .ok_or_else(|| String::from("--model requires a model name"))?;
+            model = value.clone();
+            index += 2;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--model=") {
+            model = value.to_string();
+            index += 1;
+            continue;
+        }
+        if arg == "--read-only" {
+            permission_mode_override = Some(PermissionMode::ReadOnly);
+            index += 1;
+            continue;
+        }
+        if arg == "--workspace-write" {
+            permission_mode_override = Some(PermissionMode::WorkspaceWrite);
+            index += 1;
+            continue;
+        }
+        if arg == "--danger-full-access" {
+            permission_mode_override = Some(PermissionMode::FullAccess);
+            index += 1;
+            continue;
+        }
+        return Err(format!("unknown telegram option: {arg}"));
+    }
+
+    let token = token.or_else(|| std::env::var("TELEGRAM_BOT_TOKEN").ok())
+        .ok_or_else(|| String::from(
+            "Telegram bot token is required. Use --token <token> or set TELEGRAM_BOT_TOKEN environment variable."
+        ))?;
+
+    // Determine permission mode
+    let permission_mode = if let Some(mode) = permission_mode_override {
+        mode
+    } else {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let config = ConfigLoader::discover(&cwd).ok().and_then(|loader| loader.load().ok());
+        config
+            .and_then(|c| c.permission_mode())
+            .unwrap_or(PermissionMode::ReadOnly)
+    };
+
+    Ok(CliAction::Telegram {
+        token,
+        allowed_users,
+        model,
+        permission_mode,
+        output_format,
+    })
+}
+
 fn parse_server_args(args: &[String], output_format: CliOutputFormat) -> Result<CliAction, String> {
     let mut port: u16 = 8080;
     let mut index = 0;
@@ -1585,6 +1704,131 @@ fn run_server(port: u16, output_format: CliOutputFormat) -> Result<(), Box<dyn s
     rt.block_on(async {
         runtime::api_server::start_server(registry, port).await
     })?;
+
+    Ok(())
+}
+
+/// A message handler that uses the ConversationRuntime to process messages
+struct ClawMessageHandler {
+    model: String,
+    permission_mode: PermissionMode,
+    system_prompt: Vec<String>,
+    runtime_plugin_state: RuntimePluginState,
+}
+
+impl ClawMessageHandler {
+    fn new(
+        model: String,
+        permission_mode: PermissionMode,
+        system_prompt: Vec<String>,
+        runtime_plugin_state: RuntimePluginState,
+    ) -> Self {
+        Self {
+            model,
+            permission_mode,
+            system_prompt,
+            runtime_plugin_state,
+        }
+    }
+}
+
+impl MessageHandler for ClawMessageHandler {
+    async fn process_message(
+        &mut self,
+        _chat_id: ChatId,
+        session: &mut Session,
+        text: &str,
+    ) -> Result<String, String> {
+        // Create a temporary session ID
+        let session_id = Uuid::new_v4().to_string();
+
+        // Build the runtime
+        let built_runtime = build_runtime_with_plugin_state(
+            session.clone(),
+            &session_id,
+            self.model.clone(),
+            self.system_prompt.clone(),
+            true, // enable tools
+            false, // don't emit output to stdout/stderr
+            None, // allow all tools
+            self.permission_mode,
+            None, // no progress reporter for now
+            self.runtime_plugin_state.clone(),
+        ).map_err(|e| format!("Failed to build runtime: {}", e))?;
+
+        let mut runtime = built_runtime.runtime;
+
+        // Run a turn
+        let turn_result = runtime.run_turn(text).await;
+
+        // Update the session
+        *session = runtime.into_session();
+
+        // Extract the response
+        match turn_result {
+            Ok(_turn_summary) => {
+                // Try to find the last assistant message
+                let last_assistant_message = session.messages.iter().rev().find(|m| m.role == MessageRole::Assistant);
+
+                let mut response = String::new();
+
+                if let Some(msg) = last_assistant_message {
+                    for block in &msg.blocks {
+                        if let ContentBlock::Text { text } = block {
+                            response.push_str(text);
+                        }
+                    }
+                }
+
+                if response.is_empty() {
+                    response = "Done.".to_string();
+                }
+
+                Ok(response)
+            }
+            Err(e) => Err(format!("Runtime error: {}", e)),
+        }
+    }
+}
+
+async fn run_telegram(
+    token: String,
+    allowed_users: Vec<u64>,
+    model: String,
+    permission_mode: PermissionMode,
+    output_format: CliOutputFormat,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut config = TelegramConfig::new(token);
+    config.allowed_users = allowed_users;
+
+    match output_format {
+        CliOutputFormat::Text => println!("Starting Telegram bot..."),
+        CliOutputFormat::Json => println!("{}", serde_json::json!({
+            "type": "telegram_start",
+            "allowed_users": allowed_users,
+            "model": model
+        })),
+    }
+
+    // Build system prompt
+    let cwd = std::env::current_dir()?;
+    let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let system_prompt = load_system_prompt(&cwd, &date, None::<PathBuf>)?;
+
+    // Build plugin state
+    let runtime_plugin_state = build_runtime_plugin_state()?;
+
+    // Create our handler
+    let handler = ClawMessageHandler::new(
+        model,
+        permission_mode,
+        system_prompt,
+        runtime_plugin_state,
+    );
+
+    // Create and start the runtime
+    let runtime = TelegramRuntime::new(config, handler);
+    runtime.start_polling().await?;
 
     Ok(())
 }
@@ -8763,6 +9007,9 @@ fn print_help_to(out: &mut impl Write) -> io::Result<()> {
         out,
         "      Warning: do not `{DEPRECATED_INSTALL_COMMAND}` (deprecated stub)"
     )?;
+    writeln!(out, "  claw telegram --token BOT_TOKEN [--allowed-users USER_IDS]")?;
+    writeln!(out, "      Run a Telegram bot for interacting with claw")?;
+    writeln!(out, "      (Environment variable: TELEGRAM_BOT_TOKEN)")?;
     writeln!(out, "  claw dump-manifests [--manifests-dir PATH]")?;
     writeln!(out, "  claw bootstrap-plan")?;
     writeln!(out, "  claw agents")?;

@@ -44,6 +44,7 @@ pub mod session_control;
 pub use session_control::SessionStore;
 pub mod bridge;
 pub mod cron_scheduler;
+pub mod telegram;
 mod sse;
 pub mod stale_base;
 pub mod stale_branch;
@@ -62,7 +63,7 @@ pub use bridge::{
     api::{validate_bridge_id, BridgeApiClient, BridgeFatalError, BridgeHttpClient},
     ingress::{
         ControlCommand, IngressConfig, IngressError, IngressEvent, IngressSender,
-        PermissionRequest, SessionIngress,
+        PermissionRequest as BridgePermissionRequest, SessionIngress,
     },
     manager::BridgeManager,
     run_bridge_loop,
@@ -208,6 +209,10 @@ pub use retry::{
 };
 pub use error_guide::{ErrorGuide, GuidedError, QuickstartGuide};
 pub use onboarding::{OnboardingGuide, OnboardingState, PromptTemplates};
+pub use telegram::{
+    ChatSessionStore, ChatId, EchoHandler, MessageHandler, MessageId, TelegramConfig, TelegramError,
+    TelegramResult, TelegramRuntime, User, WebhookConfig,
+};
 
 #[cfg(test)]
 pub(crate) fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {

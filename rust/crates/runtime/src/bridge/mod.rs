@@ -28,8 +28,6 @@ pub fn get_hostname() -> String {
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::bridge::api::BridgeApiClient;
-use crate::bridge::manager::BridgeManager;
 use crate::bridge::types::{BridgeConfig, SpawnMode, WorkResponse, WorkSecret};
 
 /// Bridge runtime error

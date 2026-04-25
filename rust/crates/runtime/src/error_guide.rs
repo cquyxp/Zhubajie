@@ -226,7 +226,7 @@ impl QuickstartGuide {
         let mut help = String::new();
         help.push_str("🚀 Zhubajie 快速入门\n\n");
         for step in Self::steps() {
-            help.push_str(&format!("{}\n", step);
+            help.push_str(&format!("{}\n", step));
         }
         help.push_str("\n📚 更多帮助: ./target/debug/claw --help\n");
         help.push_str("📖 文档: https://github.com/cquyxp/Zhubajie\n");
