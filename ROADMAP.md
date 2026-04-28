@@ -38,12 +38,12 @@
 
 main.rs 当前是一个巨型单体文件，涵盖 6 个独立职责域。按以下顺序逐步提取：
 
-#### 阶段 1：`doctor.rs` (~960行) ← 现在开始
-- 提取 `DiagnosticLevel`、`DiagnosticCheck`、`DoctorReport` 类型及 impl
-- 提取所有 `check_*_health()` 函数（auth, config, install, workspace, sandbox, branch, plugin_mcp, trust, system）
-- 提取 `render_diagnostic_check()`、`render_doctor_report()`、`run_doctor()`
-- 删掉 `parse_doctor_args` → 已在 `parse_args` 中，不重复提取
-- **验收**：`cargo check` + 现有测试通过
+#### 阶段 1：`doctor.rs` (~789行) ✅ 已完成
+- 提取了 `DiagnosticLevel`、`DiagnosticCheck`、`DoctorReport` 类型及 impl
+- 提取了所有 `check_*_health()` 函数（auth, config, install, workspace, sandbox, branch, plugin_mcp, trust, system）
+- 提取了 `render_diagnostic_check()`、`render_doctor_report()`、`run_doctor()`
+- **结果**：main.rs 12714 → 11949行 (-771行)，doctor.rs 789行
+- **验证**：cargo check ✅ | 161/165 测试通过（4个预存失败）
 
 #### 阶段 2：`args.rs` (~1,016行)
 - 提取 `parse_args()` 及所有 `parse_*_args()` 变体（acp, export, dump_manifests, telegram, server, resume, system_prompt）
