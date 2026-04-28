@@ -14,7 +14,7 @@ use crate::types::{
     ToolChoice, ToolDefinition, ToolResultContentBlock, Usage,
 };
 
-use super::{preflight_message_request, Provider, ProviderFuture};
+use super::preflight_message_request;
 
 pub const DEFAULT_XAI_BASE_URL: &str = "https://api.x.ai/v1";
 pub const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
@@ -339,24 +339,6 @@ fn jitter_for_base(base: Duration) -> Duration {
     mixed ^= mixed >> 31;
     let jitter_nanos = mixed % base_nanos.saturating_add(1);
     Duration::from_nanos(jitter_nanos)
-}
-
-impl Provider for OpenAiCompatClient {
-    type Stream = MessageStream;
-
-    fn send_message<'a>(
-        &'a self,
-        request: &'a MessageRequest,
-    ) -> ProviderFuture<'a, MessageResponse> {
-        Box::pin(async move { self.send_message(request).await })
-    }
-
-    fn stream_message<'a>(
-        &'a self,
-        request: &'a MessageRequest,
-    ) -> ProviderFuture<'a, Self::Stream> {
-        Box::pin(async move { self.stream_message(request).await })
-    }
 }
 
 #[derive(Debug)]

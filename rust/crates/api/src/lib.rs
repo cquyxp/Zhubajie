@@ -1,3 +1,4 @@
+mod adapters;
 mod client;
 mod error;
 mod http_client;
@@ -6,6 +7,10 @@ mod prompt_cache;
 mod providers;
 mod sse;
 mod types;
+
+pub use adapters::{
+    convert_messages, prompt_cache_record_to_runtime_event, push_prompt_cache_record,
+};
 
 pub use model_config::{DynamicProviderRegistry, ModelConfig, ModelProviderConfig, ModelRoutingConfig};
 

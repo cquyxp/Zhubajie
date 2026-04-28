@@ -34,7 +34,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use api::{
-    detect_provider_kind, resolve_startup_auth_source, AnthropicClient, AuthSource,
+    convert_messages, detect_provider_kind, prompt_cache_record_to_runtime_event,
+    push_prompt_cache_record, resolve_startup_auth_source, AnthropicClient, AuthSource,
     ContentBlockDelta, InputContentBlock, InputMessage, MessageRequest, MessageResponse,
     OutputContentBlock, PromptCache, ProviderClient as ApiProviderClient, ProviderKind,
     StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition, ToolResultContentBlock,
@@ -6383,32 +6384,6 @@ fn response_to_events(
     Ok(events)
 }
 
-fn push_prompt_cache_record(client: &ApiProviderClient, events: &mut Vec<AssistantEvent>) {
-    // `ApiProviderClient::take_last_prompt_cache_record` is a pass-through
-    // to the Anthropic variant and returns `None` for OpenAI-compat /
-    // xAI variants, which do not have a prompt cache. So this helper
-    // remains a no-op on non-Anthropic providers without any extra
-    // branching here.
-    if let Some(record) = client.take_last_prompt_cache_record() {
-        if let Some(event) = prompt_cache_record_to_runtime_event(record) {
-            events.push(AssistantEvent::PromptCache(event));
-        }
-    }
-}
-
-fn prompt_cache_record_to_runtime_event(
-    record: api::PromptCacheRecord,
-) -> Option<PromptCacheEvent> {
-    let cache_break = record.cache_break?;
-    Some(PromptCacheEvent {
-        unexpected: cache_break.unexpected,
-        reason: cache_break.reason,
-        previous_cache_read_input_tokens: cache_break.previous_cache_read_input_tokens,
-        current_cache_read_input_tokens: cache_break.current_cache_read_input_tokens,
-        token_drop: cache_break.token_drop,
-    })
-}
-
 struct CliToolExecutor {
     renderer: TerminalRenderer,
     emit_output: bool,
@@ -6552,46 +6527,6 @@ fn permission_policy(
     ))
 }
 
-fn convert_messages(messages: &[ConversationMessage]) -> Vec<InputMessage> {
-    messages
-        .iter()
-        .filter_map(|message| {
-            let role = match message.role {
-                MessageRole::System | MessageRole::User | MessageRole::Tool => "user",
-                MessageRole::Assistant => "assistant",
-            };
-            let content = message
-                .blocks
-                .iter()
-                .map(|block| match block {
-                    ContentBlock::Text { text } => InputContentBlock::Text { text: text.clone() },
-                    ContentBlock::ToolUse { id, name, input } => InputContentBlock::ToolUse {
-                        id: id.clone(),
-                        name: name.clone(),
-                        input: serde_json::from_str(input)
-                            .unwrap_or_else(|_| serde_json::json!({ "raw": input })),
-                    },
-                    ContentBlock::ToolResult {
-                        tool_use_id,
-                        output,
-                        is_error,
-                        ..
-                    } => InputContentBlock::ToolResult {
-                        tool_use_id: tool_use_id.clone(),
-                        content: vec![ToolResultContentBlock::Text {
-                            text: output.clone(),
-                        }],
-                        is_error: *is_error,
-                    },
-                })
-                .collect::<Vec<_>>();
-            (!content.is_empty()).then(|| InputMessage {
-                role: role.to_string(),
-                content,
-            })
-        })
-        .collect()
-}
 
 #[allow(clippy::too_many_lines)]
 fn print_help_to(out: &mut impl Write) -> io::Result<()> {
@@ -6783,7 +6718,7 @@ mod tests {
         format_resume_report, format_status_report, format_tool_call_start, format_tool_result,
         format_ultraplan_report, format_unknown_slash_command,
         format_unknown_slash_command_message, format_user_visible_api_error,
-        merge_prompt_with_stdin, normalize_permission_mode, parse_args, parse_export_args,
+        merge_prompt_with_stdin, normalize_permission_mode, OFFICIAL_REPO_SLUG, parse_args, parse_export_args,
         parse_git_status_branch, parse_git_status_metadata_for, parse_git_workspace_summary,
         parse_history_count, permission_policy, print_help_to, push_output_block,
         render_config_report, render_diff_report, render_diff_report_for, render_memory_report,
@@ -7063,16 +6998,29 @@ mod tests {
         }
         if include_lifecycle {
             fs::create_dir_all(root.join("lifecycle")).expect("lifecycle dir");
-            fs::write(
-                root.join("lifecycle").join("init.sh"),
-                "#!/bin/sh\nprintf 'init\\n' >> lifecycle.log\n",
-            )
-            .expect("write init lifecycle");
-            fs::write(
-                root.join("lifecycle").join("shutdown.sh"),
-                "#!/bin/sh\nprintf 'shutdown\\n' >> lifecycle.log\n",
-            )
-            .expect("write shutdown lifecycle");
+            if cfg!(windows) {
+                fs::write(
+                    root.join("lifecycle").join("init.bat"),
+                    "@echo init>> lifecycle.log\n",
+                )
+                .expect("write init lifecycle");
+                fs::write(
+                    root.join("lifecycle").join("shutdown.bat"),
+                    "@echo shutdown>> lifecycle.log\n",
+                )
+                .expect("write shutdown lifecycle");
+            } else {
+                fs::write(
+                    root.join("lifecycle").join("init.sh"),
+                    "#!/bin/sh\nprintf 'init\\n' >> lifecycle.log\n",
+                )
+                .expect("write init lifecycle");
+                fs::write(
+                    root.join("lifecycle").join("shutdown.sh"),
+                    "#!/bin/sh\nprintf 'shutdown\\n' >> lifecycle.log\n",
+                )
+                .expect("write shutdown lifecycle");
+            }
         }
 
         let hooks = if include_hooks {
@@ -7081,7 +7029,11 @@ mod tests {
             ""
         };
         let lifecycle = if include_lifecycle {
-            ",\n  \"lifecycle\": {\n    \"Init\": [\"./lifecycle/init.sh\"],\n    \"Shutdown\": [\"./lifecycle/shutdown.sh\"]\n  }"
+            if cfg!(windows) {
+                ",\n  \"lifecycle\": {\n    \"Init\": [\"./lifecycle/init.bat\"],\n    \"Shutdown\": [\"./lifecycle/shutdown.bat\"]\n  }"
+            } else {
+                ",\n  \"lifecycle\": {\n    \"Init\": [\"./lifecycle/init.sh\"],\n    \"Shutdown\": [\"./lifecycle/shutdown.sh\"]\n  }"
+            }
         } else {
             ""
         };
@@ -8666,7 +8618,7 @@ mod tests {
         assert!(help.contains("claw mcp"));
         assert!(help.contains("claw skills"));
         assert!(help.contains("claw /skills"));
-        assert!(help.contains("ultraworkers/claw-code"));
+        assert!(help.contains(OFFICIAL_REPO_SLUG));
         assert!(help.contains("cargo install claw-code"));
         assert!(!help.contains("claw login"));
         assert!(!help.contains("claw logout"));
@@ -9275,7 +9227,7 @@ UU conflicted.rs",
             },
         ];
 
-        let converted = super::convert_messages(&messages);
+        let converted = api::convert_messages(&messages);
         assert_eq!(converted.len(), 3);
         assert_eq!(converted[1].role, "assistant");
         assert_eq!(converted[2].role, "user");
@@ -9819,22 +9771,23 @@ UU conflicted.rs",
         write_mcp_server_fixture(&script_path);
         let script_path_json =
             serde_json::to_string(script_path.to_string_lossy().as_ref()).expect("json string");
+        // On Windows the Python executable is `python`; elsewhere it's `python3`.
+        let python = if cfg!(windows) { "python" } else { "python3" };
         fs::write(
             config_home.join("settings.json"),
             format!(
                 r#"{{
                   "mcpServers": {{
                     "alpha": {{
-                      "command": "python3",
-                      "args": [{}]
+                      "command": "{python}",
+                      "args": [{script_path_json}]
                     }},
                     "broken": {{
-                      "command": "python3",
+                      "command": "{python}",
                       "args": ["-c", "import sys; sys.exit(0)"]
                     }}
                   }}
                 }}"#,
-                script_path_json
             ),
         )
         .expect("write mcp settings");
@@ -10020,19 +9973,18 @@ UU conflicted.rs",
         )
         .expect("runtime should build");
 
-        assert_eq!(
-            fs::read_to_string(&log_path).expect("init log should exist"),
-            "init\n"
-        );
+        let read_log = || -> String {
+            fs::read_to_string(&log_path)
+                .expect("log should exist")
+                .replace("\r\n", "\n")
+        };
+        assert_eq!(read_log(), "init\n");
 
         runtime
             .shutdown_plugins()
             .expect("plugin shutdown should succeed");
 
-        assert_eq!(
-            fs::read_to_string(&log_path).expect("shutdown log should exist"),
-            "init\nshutdown\n"
-        );
+        assert_eq!(read_log(), "init\nshutdown\n");
 
         let _ = fs::remove_dir_all(config_home);
         let _ = fs::remove_dir_all(workspace);

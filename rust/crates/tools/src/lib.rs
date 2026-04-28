@@ -5,65 +5,72 @@ use std::time::{Duration, Instant};
 
 use api::{
     max_tokens_for_model, resolve_model_alias, ApiError, ContentBlockDelta, InputContentBlock,
-    InputMessage, MessageRequest, MessageResponse as ApiMessageResponse, OutputContentBlock,
+    MessageRequest, MessageResponse as ApiMessageResponse, OutputContentBlock,
+    InputMessage,
     ProviderClient, StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition,
     ToolResultContentBlock,
 };
 use plugins::PluginTool;
-use reqwest::blocking::Client;
 use runtime::{
-    check_freshness, dedupe_superseded_commit_events, edit_file_in_workspace, execute_bash,
-    glob_search_in_workspace, grep_search_in_workspace, load_system_prompt,
+    dedupe_superseded_commit_events,
+    load_system_prompt,
     lsp_client::LspRegistry,
     mcp_tool_bridge::McpToolRegistry,
     permission_enforcer::{EnforcementResult, PermissionEnforcer},
-    read_file_in_workspace,
+
     summary_compression::compress_summary_text,
     task_registry::TaskRegistry,
     team_cron_registry::{CronRegistry, TeamRegistry},
-    worker_boot::{WorkerReadySnapshot, WorkerRegistry, WorkerTaskReceipt},
-    write_file_in_workspace, ApiClient, ApiRequest, AssistantEvent, BashCommandInput,
-    BashCommandOutput, BranchFreshness, ConfigLoader, ContentBlock, ConversationMessage,
+    worker_boot::WorkerRegistry,
+    ApiClient, ApiRequest, AssistantEvent, BashCommandInput,
+    ConfigLoader, ContentBlock, ConversationMessage,
     ConversationRuntime, GrepSearchInput, LaneCommitProvenance, LaneEvent, LaneEventBlocker,
-    LaneEventName, LaneEventStatus, LaneFailureClass, McpDegradedReport, MessageResponse,
+    LaneFailureClass, McpDegradedReport, MessageResponse,
     MessageRole, PermissionMode, PermissionPolicy, PromptCacheEvent, ProviderFallbackConfig,
     RuntimeError, Session, TaskPacket, ToolError, ToolExecutor,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use crate::bash::command_exists;
+
+pub mod bash;
+pub mod file_tools;
+pub mod mcp_tools;
+pub mod task_tools;
+pub mod web_tools;
 
 /// Global task registry shared across tool invocations within a session.
-fn global_lsp_registry() -> &'static LspRegistry {
+pub(crate) fn global_lsp_registry() -> &'static LspRegistry {
     use std::sync::OnceLock;
     static REGISTRY: OnceLock<LspRegistry> = OnceLock::new();
     REGISTRY.get_or_init(LspRegistry::new)
 }
 
-fn global_mcp_registry() -> &'static McpToolRegistry {
+pub(crate) fn global_mcp_registry() -> &'static McpToolRegistry {
     use std::sync::OnceLock;
     static REGISTRY: OnceLock<McpToolRegistry> = OnceLock::new();
     REGISTRY.get_or_init(McpToolRegistry::new)
 }
 
-fn global_team_registry() -> &'static TeamRegistry {
+pub(crate) fn global_team_registry() -> &'static TeamRegistry {
     use std::sync::OnceLock;
     static REGISTRY: OnceLock<TeamRegistry> = OnceLock::new();
     REGISTRY.get_or_init(TeamRegistry::new)
 }
 
-fn global_cron_registry() -> &'static CronRegistry {
+pub(crate) fn global_cron_registry() -> &'static CronRegistry {
     use std::sync::OnceLock;
     static REGISTRY: OnceLock<CronRegistry> = OnceLock::new();
     REGISTRY.get_or_init(CronRegistry::new)
 }
 
-fn global_task_registry() -> &'static TaskRegistry {
+pub(crate) fn global_task_registry() -> &'static TaskRegistry {
     use std::sync::OnceLock;
     static REGISTRY: OnceLock<TaskRegistry> = OnceLock::new();
     REGISTRY.get_or_init(TaskRegistry::new)
 }
 
-fn global_worker_registry() -> &'static WorkerRegistry {
+pub(crate) fn global_worker_registry() -> &'static WorkerRegistry {
     use std::sync::OnceLock;
     static REGISTRY: OnceLock<WorkerRegistry> = OnceLock::new();
     REGISTRY.get_or_init(WorkerRegistry::new)
@@ -1200,32 +1207,32 @@ fn execute_tool_with_enforcer(
         "bash" => {
             // Parse input to get the command for permission classification
             let bash_input: BashCommandInput = from_value(input)?;
-            let classified_mode = classify_bash_permission(&bash_input.command);
+            let classified_mode = crate::bash::classify_bash_permission(&bash_input.command);
             maybe_enforce_permission_check_with_mode(enforcer, name, input, classified_mode)?;
-            run_bash(bash_input)
+            crate::bash::run_bash(bash_input)
         }
         "read_file" => {
             maybe_enforce_permission_check(enforcer, name, input)?;
-            from_value::<ReadFileInput>(input).and_then(run_read_file)
+            from_value::<crate::file_tools::ReadFileInput>(input).and_then(crate::file_tools::run_read_file)
         }
         "write_file" => {
             maybe_enforce_permission_check(enforcer, name, input)?;
-            from_value::<WriteFileInput>(input).and_then(run_write_file)
+            from_value::<crate::file_tools::WriteFileInput>(input).and_then(crate::file_tools::run_write_file)
         }
         "edit_file" => {
             maybe_enforce_permission_check(enforcer, name, input)?;
-            from_value::<EditFileInput>(input).and_then(run_edit_file)
+            from_value::<crate::file_tools::EditFileInput>(input).and_then(crate::file_tools::run_edit_file)
         }
         "glob_search" => {
             maybe_enforce_permission_check(enforcer, name, input)?;
-            from_value::<GlobSearchInputValue>(input).and_then(run_glob_search)
+            from_value::<crate::file_tools::GlobSearchInputValue>(input).and_then(crate::file_tools::run_glob_search)
         }
         "grep_search" => {
             maybe_enforce_permission_check(enforcer, name, input)?;
-            from_value::<GrepSearchInput>(input).and_then(run_grep_search)
+            from_value::<GrepSearchInput>(input).and_then(crate::file_tools::run_grep_search)
         }
-        "WebFetch" => from_value::<WebFetchInput>(input).and_then(run_web_fetch),
-        "WebSearch" => from_value::<WebSearchInput>(input).and_then(run_web_search),
+        "WebFetch" => from_value::<crate::web_tools::WebFetchInput>(input).and_then(crate::web_tools::run_web_fetch),
+        "WebSearch" => from_value::<crate::web_tools::WebSearchInput>(input).and_then(crate::web_tools::run_web_search),
         "TodoWrite" => from_value::<TodoWriteInput>(input).and_then(run_todo_write),
         "Skill" => from_value::<SkillInput>(input).and_then(run_skill),
         "Agent" => from_value::<AgentInput>(input).and_then(run_agent),
@@ -1242,56 +1249,56 @@ fn execute_tool_with_enforcer(
         "REPL" => from_value::<ReplInput>(input).and_then(run_repl),
         "PowerShell" => {
             // Parse input to get the command for permission classification
-            let ps_input: PowerShellInput = from_value(input)?;
-            let classified_mode = classify_powershell_permission(&ps_input.command);
+            let ps_input: crate::bash::PowerShellInput = from_value(input)?;
+            let classified_mode = crate::bash::classify_powershell_permission(&ps_input.command);
             maybe_enforce_permission_check_with_mode(enforcer, name, input, classified_mode)?;
-            run_powershell(ps_input)
+            crate::bash::run_powershell(ps_input)
         }
         "AskUserQuestion" => {
-            from_value::<AskUserQuestionInput>(input).and_then(run_ask_user_question)
+            from_value::<crate::task_tools::AskUserQuestionInput>(input).and_then(crate::task_tools::run_ask_user_question)
         }
-        "TaskCreate" => from_value::<TaskCreateInput>(input).and_then(run_task_create),
-        "RunTaskPacket" => from_value::<TaskPacket>(input).and_then(run_task_packet),
-        "TaskGet" => from_value::<TaskIdInput>(input).and_then(run_task_get),
-        "TaskList" => run_task_list(input.clone()),
-        "TaskStop" => from_value::<TaskIdInput>(input).and_then(run_task_stop),
-        "TaskUpdate" => from_value::<TaskUpdateInput>(input).and_then(run_task_update),
-        "TaskOutput" => from_value::<TaskIdInput>(input).and_then(run_task_output),
-        "WorkerCreate" => from_value::<WorkerCreateInput>(input).and_then(run_worker_create),
-        "WorkerGet" => from_value::<WorkerIdInput>(input).and_then(run_worker_get),
-        "WorkerObserve" => from_value::<WorkerObserveInput>(input).and_then(run_worker_observe),
+        "TaskCreate" => from_value::<crate::task_tools::TaskCreateInput>(input).and_then(crate::task_tools::run_task_create),
+        "RunTaskPacket" => from_value::<TaskPacket>(input).and_then(crate::task_tools::run_task_packet),
+        "TaskGet" => from_value::<crate::task_tools::TaskIdInput>(input).and_then(crate::task_tools::run_task_get),
+        "TaskList" => crate::task_tools::run_task_list(input.clone()),
+        "TaskStop" => from_value::<crate::task_tools::TaskIdInput>(input).and_then(crate::task_tools::run_task_stop),
+        "TaskUpdate" => from_value::<crate::task_tools::TaskUpdateInput>(input).and_then(crate::task_tools::run_task_update),
+        "TaskOutput" => from_value::<crate::task_tools::TaskIdInput>(input).and_then(crate::task_tools::run_task_output),
+        "WorkerCreate" => from_value::<crate::task_tools::WorkerCreateInput>(input).and_then(crate::task_tools::run_worker_create),
+        "WorkerGet" => from_value::<crate::task_tools::WorkerIdInput>(input).and_then(crate::task_tools::run_worker_get),
+        "WorkerObserve" => from_value::<crate::task_tools::WorkerObserveInput>(input).and_then(crate::task_tools::run_worker_observe),
         "WorkerResolveTrust" => {
-            from_value::<WorkerIdInput>(input).and_then(run_worker_resolve_trust)
+            from_value::<crate::task_tools::WorkerIdInput>(input).and_then(crate::task_tools::run_worker_resolve_trust)
         }
-        "WorkerAwaitReady" => from_value::<WorkerIdInput>(input).and_then(run_worker_await_ready),
+        "WorkerAwaitReady" => from_value::<crate::task_tools::WorkerIdInput>(input).and_then(crate::task_tools::run_worker_await_ready),
         "WorkerSendPrompt" => {
-            from_value::<WorkerSendPromptInput>(input).and_then(run_worker_send_prompt)
+            from_value::<crate::task_tools::WorkerSendPromptInput>(input).and_then(crate::task_tools::run_worker_send_prompt)
         }
-        "WorkerRestart" => from_value::<WorkerIdInput>(input).and_then(run_worker_restart),
-        "WorkerTerminate" => from_value::<WorkerIdInput>(input).and_then(run_worker_terminate),
-        "WorkerObserveCompletion" => from_value::<WorkerObserveCompletionInput>(input)
-            .and_then(run_worker_observe_completion),
-        "TeamCreate" => from_value::<TeamCreateInput>(input).and_then(run_team_create),
-        "TeamDelete" => from_value::<TeamDeleteInput>(input).and_then(run_team_delete),
-        "CronCreate" => from_value::<CronCreateInput>(input).and_then(run_cron_create),
-        "CronDelete" => from_value::<CronDeleteInput>(input).and_then(run_cron_delete),
-        "CronList" => run_cron_list(input.clone()),
-        "LSP" => from_value::<LspInput>(input).and_then(run_lsp),
+        "WorkerRestart" => from_value::<crate::task_tools::WorkerIdInput>(input).and_then(crate::task_tools::run_worker_restart),
+        "WorkerTerminate" => from_value::<crate::task_tools::WorkerIdInput>(input).and_then(crate::task_tools::run_worker_terminate),
+        "WorkerObserveCompletion" => from_value::<crate::task_tools::WorkerObserveCompletionInput>(input)
+            .and_then(crate::task_tools::run_worker_observe_completion),
+        "TeamCreate" => from_value::<crate::task_tools::TeamCreateInput>(input).and_then(crate::task_tools::run_team_create),
+        "TeamDelete" => from_value::<crate::task_tools::TeamDeleteInput>(input).and_then(crate::task_tools::run_team_delete),
+        "CronCreate" => from_value::<crate::task_tools::CronCreateInput>(input).and_then(crate::task_tools::run_cron_create),
+        "CronDelete" => from_value::<crate::task_tools::CronDeleteInput>(input).and_then(crate::task_tools::run_cron_delete),
+        "CronList" => crate::task_tools::run_cron_list(input.clone()),
+        "LSP" => from_value::<crate::mcp_tools::LspInput>(input).and_then(crate::mcp_tools::run_lsp),
         "ListMcpResources" => {
-            from_value::<McpResourceInput>(input).and_then(run_list_mcp_resources)
+            from_value::<crate::mcp_tools::McpResourceInput>(input).and_then(crate::mcp_tools::run_list_mcp_resources)
         }
-        "ReadMcpResource" => from_value::<McpResourceInput>(input).and_then(run_read_mcp_resource),
-        "McpAuth" => from_value::<McpAuthInput>(input).and_then(run_mcp_auth),
-        "RemoteTrigger" => from_value::<RemoteTriggerInput>(input).and_then(run_remote_trigger),
-        "MCP" => from_value::<McpToolInput>(input).and_then(run_mcp_tool),
+        "ReadMcpResource" => from_value::<crate::mcp_tools::McpResourceInput>(input).and_then(crate::mcp_tools::run_read_mcp_resource),
+        "McpAuth" => from_value::<crate::mcp_tools::McpAuthInput>(input).and_then(crate::mcp_tools::run_mcp_auth),
+        "RemoteTrigger" => from_value::<crate::mcp_tools::RemoteTriggerInput>(input).and_then(crate::mcp_tools::run_remote_trigger),
+        "MCP" => from_value::<crate::mcp_tools::McpToolInput>(input).and_then(crate::mcp_tools::run_mcp_tool),
         "TestingPermission" => {
-            from_value::<TestingPermissionInput>(input).and_then(run_testing_permission)
+            from_value::<crate::mcp_tools::TestingPermissionInput>(input).and_then(crate::mcp_tools::run_testing_permission)
         }
         _ => Err(format!("unsupported tool: {name}")),
     }
 }
 
-fn maybe_enforce_permission_check(
+pub(crate) fn maybe_enforce_permission_check(
     enforcer: Option<&PermissionEnforcer>,
     tool_name: &str,
     input: &Value,
@@ -1305,7 +1312,7 @@ fn maybe_enforce_permission_check(
 /// Enforce permission check with a dynamically classified permission mode.
 /// Used for tools like bash and `PowerShell` where the required permission
 /// depends on the actual command being executed.
-fn maybe_enforce_permission_check_with_mode(
+pub(crate) fn maybe_enforce_permission_check_with_mode(
     enforcer: Option<&PermissionEnforcer>,
     tool_name: &str,
     input: &Value,
@@ -1324,799 +1331,11 @@ fn maybe_enforce_permission_check_with_mode(
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
-fn run_ask_user_question(input: AskUserQuestionInput) -> Result<String, String> {
-    use std::io::{self, BufRead, Write};
 
-    // Display the question to the user via stdout
-    let stdout = io::stdout();
-    let stdin = io::stdin();
-    let mut out = stdout.lock();
-
-    writeln!(out, "\n[Question] {}", input.question).map_err(|e| e.to_string())?;
-
-    if let Some(ref options) = input.options {
-        for (i, option) in options.iter().enumerate() {
-            writeln!(out, "  {}. {}", i + 1, option).map_err(|e| e.to_string())?;
-        }
-        write!(out, "Enter choice (1-{}): ", options.len()).map_err(|e| e.to_string())?;
-    } else {
-        write!(out, "Your answer: ").map_err(|e| e.to_string())?;
-    }
-    out.flush().map_err(|e| e.to_string())?;
-
-    // Read user response from stdin
-    let mut response = String::new();
-    stdin
-        .lock()
-        .read_line(&mut response)
-        .map_err(|e| e.to_string())?;
-    let response = response.trim().to_string();
-
-    // If options were provided, resolve the numeric choice
-    let answer = if let Some(ref options) = input.options {
-        if let Ok(idx) = response.parse::<usize>() {
-            if idx >= 1 && idx <= options.len() {
-                options[idx - 1].clone()
-            } else {
-                response.clone()
-            }
-        } else {
-            response.clone()
-        }
-    } else {
-        response.clone()
-    };
-
-    to_pretty_json(json!({
-        "question": input.question,
-        "answer": answer,
-        "status": "answered"
-    }))
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_task_create(input: TaskCreateInput) -> Result<String, String> {
-    let registry = global_task_registry();
-    let task = registry.create(&input.prompt, input.description.as_deref());
-    to_pretty_json(json!({
-        "task_id": task.task_id,
-        "status": task.status,
-        "prompt": task.prompt,
-        "description": task.description,
-        "task_packet": task.task_packet,
-        "created_at": task.created_at
-    }))
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_task_packet(input: TaskPacket) -> Result<String, String> {
-    let registry = global_task_registry();
-    let task = registry
-        .create_from_packet(input)
-        .map_err(|error| error.to_string())?;
-
-    to_pretty_json(json!({
-        "task_id": task.task_id,
-        "status": task.status,
-        "prompt": task.prompt,
-        "description": task.description,
-        "task_packet": task.task_packet,
-        "created_at": task.created_at
-    }))
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_task_get(input: TaskIdInput) -> Result<String, String> {
-    let registry = global_task_registry();
-    match registry.get(&input.task_id) {
-        Some(task) => to_pretty_json(json!({
-            "task_id": task.task_id,
-            "status": task.status,
-            "prompt": task.prompt,
-            "description": task.description,
-            "task_packet": task.task_packet,
-            "created_at": task.created_at,
-            "updated_at": task.updated_at,
-            "messages": task.messages,
-            "team_id": task.team_id
-        })),
-        None => Err(format!("task not found: {}", input.task_id)),
-    }
-}
-
-fn run_task_list(_input: Value) -> Result<String, String> {
-    let registry = global_task_registry();
-    let tasks: Vec<_> = registry
-        .list(None)
-        .into_iter()
-        .map(|t| {
-            json!({
-                "task_id": t.task_id,
-                "status": t.status,
-                "prompt": t.prompt,
-                "description": t.description,
-                "task_packet": t.task_packet,
-                "created_at": t.created_at,
-                "updated_at": t.updated_at,
-                "team_id": t.team_id
-            })
-        })
-        .collect();
-    to_pretty_json(json!({
-        "tasks": tasks,
-        "count": tasks.len()
-    }))
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_task_stop(input: TaskIdInput) -> Result<String, String> {
-    let registry = global_task_registry();
-    match registry.stop(&input.task_id) {
-        Ok(task) => to_pretty_json(json!({
-            "task_id": task.task_id,
-            "status": task.status,
-            "message": "Task stopped"
-        })),
-        Err(e) => Err(e),
-    }
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_task_update(input: TaskUpdateInput) -> Result<String, String> {
-    let registry = global_task_registry();
-    match registry.update(&input.task_id, &input.message) {
-        Ok(task) => to_pretty_json(json!({
-            "task_id": task.task_id,
-            "status": task.status,
-            "message_count": task.messages.len(),
-            "last_message": input.message
-        })),
-        Err(e) => Err(e),
-    }
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_task_output(input: TaskIdInput) -> Result<String, String> {
-    let registry = global_task_registry();
-    match registry.output(&input.task_id) {
-        Ok(output) => to_pretty_json(json!({
-            "task_id": input.task_id,
-            "output": output,
-            "has_output": !output.is_empty()
-        })),
-        Err(e) => Err(e),
-    }
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_worker_create(input: WorkerCreateInput) -> Result<String, String> {
-    // Merge config-level trusted_roots with per-call overrides.
-    // Config provides the default allowlist; per-call roots add on top.
-    let config_roots: Vec<String> = ConfigLoader::default_for(&input.cwd)
-        .load()
-        .ok()
-        .map(|c| c.trusted_roots().to_vec())
-        .unwrap_or_default();
-    let merged_roots: Vec<String> = config_roots
-        .into_iter()
-        .chain(input.trusted_roots.iter().cloned())
-        .collect();
-    let worker = global_worker_registry().create(
-        &input.cwd,
-        &merged_roots,
-        input.auto_recover_prompt_misdelivery,
-    );
-    to_pretty_json(worker)
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_worker_get(input: WorkerIdInput) -> Result<String, String> {
-    global_worker_registry().get(&input.worker_id).map_or_else(
-        || Err(format!("worker not found: {}", input.worker_id)),
-        to_pretty_json,
-    )
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_worker_observe(input: WorkerObserveInput) -> Result<String, String> {
-    let worker = global_worker_registry().observe(&input.worker_id, &input.screen_text)?;
-    to_pretty_json(worker)
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_worker_resolve_trust(input: WorkerIdInput) -> Result<String, String> {
-    let worker = global_worker_registry().resolve_trust(&input.worker_id)?;
-    to_pretty_json(worker)
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_worker_await_ready(input: WorkerIdInput) -> Result<String, String> {
-    let snapshot: WorkerReadySnapshot = global_worker_registry().await_ready(&input.worker_id)?;
-    to_pretty_json(snapshot)
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_worker_send_prompt(input: WorkerSendPromptInput) -> Result<String, String> {
-    let worker = global_worker_registry().send_prompt(
-        &input.worker_id,
-        input.prompt.as_deref(),
-        input.task_receipt,
-    )?;
-    to_pretty_json(worker)
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_worker_restart(input: WorkerIdInput) -> Result<String, String> {
-    let worker = global_worker_registry().restart(&input.worker_id)?;
-    to_pretty_json(worker)
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_worker_terminate(input: WorkerIdInput) -> Result<String, String> {
-    let worker = global_worker_registry().terminate(&input.worker_id)?;
-    to_pretty_json(worker)
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_worker_observe_completion(input: WorkerObserveCompletionInput) -> Result<String, String> {
-    let worker = global_worker_registry().observe_completion(
-        &input.worker_id,
-        &input.finish_reason,
-        input.tokens_output,
-    )?;
-    to_pretty_json(worker)
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_team_create(input: TeamCreateInput) -> Result<String, String> {
-    let task_ids: Vec<String> = input
-        .tasks
-        .iter()
-        .filter_map(|t| t.get("task_id").and_then(|v| v.as_str()).map(str::to_owned))
-        .collect();
-    let team = global_team_registry().create(&input.name, task_ids);
-    // Register team assignment on each task
-    for task_id in &team.task_ids {
-        let _ = global_task_registry().assign_team(task_id, &team.team_id);
-    }
-    to_pretty_json(json!({
-        "team_id": team.team_id,
-        "name": team.name,
-        "task_count": team.task_ids.len(),
-        "task_ids": team.task_ids,
-        "status": team.status,
-        "created_at": team.created_at
-    }))
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_team_delete(input: TeamDeleteInput) -> Result<String, String> {
-    match global_team_registry().delete(&input.team_id) {
-        Ok(team) => to_pretty_json(json!({
-            "team_id": team.team_id,
-            "name": team.name,
-            "status": team.status,
-            "message": "Team deleted"
-        })),
-        Err(e) => Err(e),
-    }
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_cron_create(input: CronCreateInput) -> Result<String, String> {
-    let entry =
-        global_cron_registry().create(&input.schedule, &input.prompt, input.description.as_deref());
-    to_pretty_json(json!({
-        "cron_id": entry.cron_id,
-        "schedule": entry.schedule,
-        "prompt": entry.prompt,
-        "description": entry.description,
-        "enabled": entry.enabled,
-        "created_at": entry.created_at
-    }))
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_cron_delete(input: CronDeleteInput) -> Result<String, String> {
-    match global_cron_registry().delete(&input.cron_id) {
-        Ok(entry) => to_pretty_json(json!({
-            "cron_id": entry.cron_id,
-            "schedule": entry.schedule,
-            "status": "deleted",
-            "message": "Cron entry removed"
-        })),
-        Err(e) => Err(e),
-    }
-}
-
-fn run_cron_list(_input: Value) -> Result<String, String> {
-    let entries: Vec<_> = global_cron_registry()
-        .list(false)
-        .into_iter()
-        .map(|e| {
-            json!({
-                "cron_id": e.cron_id,
-                "schedule": e.schedule,
-                "prompt": e.prompt,
-                "description": e.description,
-                "enabled": e.enabled,
-                "run_count": e.run_count,
-                "last_run_at": e.last_run_at,
-                "created_at": e.created_at
-            })
-        })
-        .collect();
-    to_pretty_json(json!({
-        "crons": entries,
-        "count": entries.len()
-    }))
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_lsp(input: LspInput) -> Result<String, String> {
-    let registry = global_lsp_registry();
-    let action = &input.action;
-    let path = input.path.as_deref();
-    let line = input.line;
-    let character = input.character;
-    let query = input.query.as_deref();
-
-    match registry.dispatch(action, path, line, character, query) {
-        Ok(result) => to_pretty_json(result),
-        Err(e) => to_pretty_json(json!({
-            "action": action,
-            "error": e,
-            "status": "error"
-        })),
-    }
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_list_mcp_resources(input: McpResourceInput) -> Result<String, String> {
-    let registry = global_mcp_registry();
-    let server = input.server.as_deref().unwrap_or("default");
-    match registry.list_resources(server) {
-        Ok(resources) => {
-            let items: Vec<_> = resources
-                .iter()
-                .map(|r| {
-                    json!({
-                        "uri": r.uri,
-                        "name": r.name,
-                        "description": r.description,
-                        "mime_type": r.mime_type,
-                    })
-                })
-                .collect();
-            to_pretty_json(json!({
-                "server": server,
-                "resources": items,
-                "count": items.len()
-            }))
-        }
-        Err(e) => to_pretty_json(json!({
-            "server": server,
-            "resources": [],
-            "error": e
-        })),
-    }
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_read_mcp_resource(input: McpResourceInput) -> Result<String, String> {
-    let registry = global_mcp_registry();
-    let uri = input.uri.as_deref().unwrap_or("");
-    let server = input.server.as_deref().unwrap_or("default");
-    match registry.read_resource(server, uri) {
-        Ok(resource) => to_pretty_json(json!({
-            "server": server,
-            "uri": resource.uri,
-            "name": resource.name,
-            "description": resource.description,
-            "mime_type": resource.mime_type
-        })),
-        Err(e) => to_pretty_json(json!({
-            "server": server,
-            "uri": uri,
-            "error": e
-        })),
-    }
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_mcp_auth(input: McpAuthInput) -> Result<String, String> {
-    let registry = global_mcp_registry();
-    match registry.get_server(&input.server) {
-        Some(state) => to_pretty_json(json!({
-            "server": input.server,
-            "status": state.status,
-            "server_info": state.server_info,
-            "tool_count": state.tools.len(),
-            "resource_count": state.resources.len()
-        })),
-        None => to_pretty_json(json!({
-            "server": input.server,
-            "status": "disconnected",
-            "message": "Server not registered. Use MCP tool to connect first."
-        })),
-    }
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_remote_trigger(input: RemoteTriggerInput) -> Result<String, String> {
-    let method = input.method.unwrap_or_else(|| "GET".to_string());
-    let client = Client::new();
-
-    let mut request = match method.to_uppercase().as_str() {
-        "GET" => client.get(&input.url),
-        "POST" => client.post(&input.url),
-        "PUT" => client.put(&input.url),
-        "DELETE" => client.delete(&input.url),
-        "PATCH" => client.patch(&input.url),
-        "HEAD" => client.head(&input.url),
-        other => return Err(format!("unsupported HTTP method: {other}")),
-    };
-
-    // Apply custom headers
-    if let Some(ref headers) = input.headers {
-        if let Some(obj) = headers.as_object() {
-            for (key, value) in obj {
-                if let Some(val) = value.as_str() {
-                    request = request.header(key.as_str(), val);
-                }
-            }
-        }
-    }
-
-    // Apply body
-    if let Some(ref body) = input.body {
-        request = request.body(body.clone());
-    }
-
-    // Execute with a 30-second timeout
-    let request = request.timeout(Duration::from_secs(30));
-
-    match request.send() {
-        Ok(response) => {
-            let status = response.status().as_u16();
-            let body = response.text().unwrap_or_default();
-            let truncated_body = if body.len() > 8192 {
-                format!(
-                    "{}\n\n[response truncated — {} bytes total]",
-                    &body[..8192],
-                    body.len()
-                )
-            } else {
-                body
-            };
-            to_pretty_json(json!({
-                "url": input.url,
-                "method": method,
-                "status_code": status,
-                "body": truncated_body,
-                "success": (200..300).contains(&status)
-            }))
-        }
-        Err(e) => to_pretty_json(json!({
-            "url": input.url,
-            "method": method,
-            "error": e.to_string(),
-            "success": false
-        })),
-    }
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_mcp_tool(input: McpToolInput) -> Result<String, String> {
-    let registry = global_mcp_registry();
-    let args = input.arguments.unwrap_or(serde_json::json!({}));
-    match registry.call_tool(&input.server, &input.tool, &args) {
-        Ok(result) => to_pretty_json(json!({
-            "server": input.server,
-            "tool": input.tool,
-            "result": result,
-            "status": "success"
-        })),
-        Err(e) => to_pretty_json(json!({
-            "server": input.server,
-            "tool": input.tool,
-            "error": e,
-            "status": "error"
-        })),
-    }
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_testing_permission(input: TestingPermissionInput) -> Result<String, String> {
-    to_pretty_json(json!({
-        "action": input.action,
-        "permitted": true,
-        "message": "Testing permission tool stub"
-    }))
-}
-fn from_value<T: for<'de> Deserialize<'de>>(input: &Value) -> Result<T, String> {
+pub(crate) fn from_value<T: for<'de> Deserialize<'de>>(input: &Value) -> Result<T, String> {
     serde_json::from_value(input.clone()).map_err(|error| error.to_string())
 }
 
-/// Classify bash command permission based on command type and path.
-/// ROADMAP #50: Read-only commands targeting CWD paths get `WorkspaceWrite`,
-/// all others remain `DangerFullAccess`.
-fn classify_bash_permission(command: &str) -> PermissionMode {
-    // Read-only commands that are safe when targeting workspace paths
-    const READ_ONLY_COMMANDS: &[&str] = &[
-        "cat", "head", "tail", "less", "more", "ls", "ll", "dir", "find", "test", "[", "[[",
-        "grep", "rg", "awk", "sed", "file", "stat", "readlink", "wc", "sort", "uniq", "cut", "tr",
-        "pwd", "echo", "printf",
-    ];
-
-    // Get the base command (first word before any args or pipes)
-    let base_cmd = command.split_whitespace().next().unwrap_or("");
-    let base_cmd = base_cmd.split('|').next().unwrap_or("").trim();
-    let base_cmd = base_cmd.split(';').next().unwrap_or("").trim();
-    let base_cmd = base_cmd.split('>').next().unwrap_or("").trim();
-    let base_cmd = base_cmd.split('<').next().unwrap_or("").trim();
-
-    // Check if it's a read-only command
-    let cmd_name = base_cmd.split('/').next_back().unwrap_or(base_cmd);
-    let is_read_only = READ_ONLY_COMMANDS.contains(&cmd_name);
-
-    if !is_read_only {
-        return PermissionMode::DangerFullAccess;
-    }
-
-    // Check if any path argument is outside workspace
-    // Simple heuristic: check for absolute paths not starting with CWD
-    if has_dangerous_paths(command) {
-        return PermissionMode::DangerFullAccess;
-    }
-
-    PermissionMode::WorkspaceWrite
-}
-
-/// Check if command has dangerous paths (outside workspace).
-fn has_dangerous_paths(command: &str) -> bool {
-    // Look for absolute paths
-    let tokens: Vec<&str> = command.split_whitespace().collect();
-
-    for token in tokens {
-        // Skip flags/options
-        if token.starts_with('-') {
-            continue;
-        }
-
-        // Check for absolute paths
-        if token.starts_with('/') || token.starts_with("~/") {
-            // Check if it's within CWD
-            let path =
-                PathBuf::from(token.replace('~', &std::env::var("HOME").unwrap_or_default()));
-            if let Ok(cwd) = std::env::current_dir() {
-                if !path.starts_with(&cwd) {
-                    return true; // Path outside workspace
-                }
-            }
-        }
-
-        // Check for parent directory traversal that escapes workspace
-        if token.contains("../..") || token.starts_with("../") && !token.starts_with("./") {
-            return true;
-        }
-    }
-
-    false
-}
-
-fn run_bash(input: BashCommandInput) -> Result<String, String> {
-    if let Some(output) = workspace_test_branch_preflight(&input.command) {
-        return serde_json::to_string_pretty(&output).map_err(|error| error.to_string());
-    }
-    serde_json::to_string_pretty(&execute_bash(input).map_err(|error| error.to_string())?)
-        .map_err(|error| error.to_string())
-}
-
-fn workspace_test_branch_preflight(command: &str) -> Option<BashCommandOutput> {
-    if !is_workspace_test_command(command) {
-        return None;
-    }
-
-    let branch = git_stdout(&["branch", "--show-current"])?;
-    let main_ref = resolve_main_ref(&branch)?;
-    let freshness = check_freshness(&branch, &main_ref);
-    match freshness {
-        BranchFreshness::Fresh => None,
-        BranchFreshness::Stale {
-            commits_behind,
-            missing_fixes,
-        } => Some(branch_divergence_output(
-            command,
-            &branch,
-            &main_ref,
-            commits_behind,
-            None,
-            &missing_fixes,
-        )),
-        BranchFreshness::Diverged {
-            ahead,
-            behind,
-            missing_fixes,
-        } => Some(branch_divergence_output(
-            command,
-            &branch,
-            &main_ref,
-            behind,
-            Some(ahead),
-            &missing_fixes,
-        )),
-    }
-}
-
-fn is_workspace_test_command(command: &str) -> bool {
-    let normalized = normalize_shell_command(command);
-    [
-        "cargo test --workspace",
-        "cargo test --all",
-        "cargo nextest run --workspace",
-        "cargo nextest run --all",
-    ]
-    .iter()
-    .any(|needle| normalized.contains(needle))
-}
-
-fn normalize_shell_command(command: &str) -> String {
-    command
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_ascii_lowercase()
-}
-
-fn resolve_main_ref(branch: &str) -> Option<String> {
-    let has_local_main = git_ref_exists("main");
-    let has_remote_main = git_ref_exists("origin/main");
-
-    if branch == "main" && has_remote_main {
-        Some("origin/main".to_string())
-    } else if has_local_main {
-        Some("main".to_string())
-    } else if has_remote_main {
-        Some("origin/main".to_string())
-    } else {
-        None
-    }
-}
-
-fn git_ref_exists(reference: &str) -> bool {
-    Command::new("git")
-        .args(["rev-parse", "--verify", "--quiet", reference])
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
-}
-
-fn git_stdout(args: &[&str]) -> Option<String> {
-    let output = Command::new("git").args(args).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    (!stdout.is_empty()).then_some(stdout)
-}
-
-fn branch_divergence_output(
-    command: &str,
-    branch: &str,
-    main_ref: &str,
-    commits_behind: usize,
-    commits_ahead: Option<usize>,
-    missing_fixes: &[String],
-) -> BashCommandOutput {
-    let relation = commits_ahead.map_or_else(
-        || format!("is {commits_behind} commit(s) behind"),
-        |ahead| format!("has diverged ({ahead} ahead, {commits_behind} behind)"),
-    );
-    let missing_summary = if missing_fixes.is_empty() {
-        "(none surfaced)".to_string()
-    } else {
-        missing_fixes.join("; ")
-    };
-    let stderr = format!(
-        "branch divergence detected before workspace tests: `{branch}` {relation} `{main_ref}`. Missing commits: {missing_summary}. Merge or rebase `{main_ref}` before re-running `{command}`."
-    );
-
-    BashCommandOutput {
-        stdout: String::new(),
-        stderr: stderr.clone(),
-        raw_output_path: None,
-        interrupted: false,
-        is_image: None,
-        background_task_id: None,
-        backgrounded_by_user: None,
-        assistant_auto_backgrounded: None,
-        dangerously_disable_sandbox: None,
-        return_code_interpretation: Some("preflight_blocked:branch_divergence".to_string()),
-        no_output_expected: Some(false),
-        structured_content: Some(vec![serde_json::to_value(
-            LaneEvent::new(
-                LaneEventName::BranchStaleAgainstMain,
-                LaneEventStatus::Blocked,
-                iso8601_now(),
-            )
-            .with_failure_class(LaneFailureClass::BranchDivergence)
-            .with_detail(stderr.clone())
-            .with_data(json!({
-                "branch": branch,
-                "mainRef": main_ref,
-                "commitsBehind": commits_behind,
-                "commitsAhead": commits_ahead,
-                "missingCommits": missing_fixes,
-                "blockedCommand": command,
-                "recommendedAction": format!("merge or rebase {main_ref} before workspace tests")
-            })),
-        )
-        .expect("lane event should serialize")]),
-        persisted_output_path: None,
-        persisted_output_size: None,
-        sandbox_status: None,
-    }
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_read_file(input: ReadFileInput) -> Result<String, String> {
-    let workspace_root = std::env::current_dir().map_err(|error| error.to_string())?;
-    to_pretty_json(
-        read_file_in_workspace(&input.path, input.offset, input.limit, &workspace_root)
-            .map_err(io_to_string)?,
-    )
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_write_file(input: WriteFileInput) -> Result<String, String> {
-    let workspace_root = std::env::current_dir().map_err(|error| error.to_string())?;
-    to_pretty_json(
-        write_file_in_workspace(&input.path, &input.content, &workspace_root)
-            .map_err(io_to_string)?,
-    )
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_edit_file(input: EditFileInput) -> Result<String, String> {
-    let workspace_root = std::env::current_dir().map_err(|error| error.to_string())?;
-    to_pretty_json(
-        edit_file_in_workspace(
-            &input.path,
-            &input.old_string,
-            &input.new_string,
-            input.replace_all.unwrap_or(false),
-            &workspace_root,
-        )
-        .map_err(io_to_string)?,
-    )
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_glob_search(input: GlobSearchInputValue) -> Result<String, String> {
-    let workspace_root = std::env::current_dir().map_err(|error| error.to_string())?;
-    to_pretty_json(
-        glob_search_in_workspace(&input.pattern, input.path.as_deref(), &workspace_root)
-            .map_err(io_to_string)?,
-    )
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_grep_search(input: GrepSearchInput) -> Result<String, String> {
-    let workspace_root = std::env::current_dir().map_err(|error| error.to_string())?;
-    to_pretty_json(grep_search_in_workspace(&input, &workspace_root).map_err(io_to_string)?)
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_web_fetch(input: WebFetchInput) -> Result<String, String> {
-    to_pretty_json(execute_web_fetch(&input)?)
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn run_web_search(input: WebSearchInput) -> Result<String, String> {
-    to_pretty_json(execute_web_search(&input)?)
-}
 
 fn run_todo_write(input: TodoWriteInput) -> Result<String, String> {
     to_pretty_json(execute_todo_write(input)?)
@@ -2166,130 +1385,15 @@ fn run_repl(input: ReplInput) -> Result<String, String> {
     to_pretty_json(execute_repl(input)?)
 }
 
-/// Classify `PowerShell` command permission based on command type and path.
-/// ROADMAP #50: Read-only commands targeting CWD paths get `WorkspaceWrite`,
-/// all others remain `DangerFullAccess`.
-fn classify_powershell_permission(command: &str) -> PermissionMode {
-    // Read-only commands that are safe when targeting workspace paths
-    const READ_ONLY_COMMANDS: &[&str] = &[
-        "Get-Content",
-        "Get-ChildItem",
-        "Test-Path",
-        "Get-Item",
-        "Get-ItemProperty",
-        "Get-FileHash",
-        "Select-String",
-    ];
-
-    // Check if command starts with a read-only cmdlet
-    let cmd_lower = command.trim().to_lowercase();
-    let is_read_only_cmd = READ_ONLY_COMMANDS
-        .iter()
-        .any(|cmd| cmd_lower.starts_with(&cmd.to_lowercase()));
-
-    if !is_read_only_cmd {
-        return PermissionMode::DangerFullAccess;
-    }
-
-    // Check if the path is within workspace (CWD or subdirectory)
-    // Extract path from command - look for -Path or positional parameter
-    let path = extract_powershell_path(command);
-    match path {
-        Some(p) if is_within_workspace(&p) => PermissionMode::WorkspaceWrite,
-        _ => PermissionMode::DangerFullAccess,
-    }
-}
-
-/// Extract the path argument from a `PowerShell` command.
-fn extract_powershell_path(command: &str) -> Option<String> {
-    // Look for -Path parameter
-    if let Some(idx) = command.to_lowercase().find("-path") {
-        let after_path = &command[idx + 5..];
-        let path = after_path.split_whitespace().next()?;
-        return Some(path.trim_matches('"').trim_matches('\'').to_string());
-    }
-
-    // Look for positional path parameter (after command name)
-    let parts: Vec<&str> = command.split_whitespace().collect();
-    if parts.len() >= 2 {
-        // Skip the cmdlet name and take the first argument
-        let first_arg = parts[1];
-        // Check if it looks like a path (contains \, /, or .)
-        if first_arg.contains(['\\', '/', '.']) {
-            return Some(first_arg.trim_matches('"').trim_matches('\'').to_string());
-        }
-    }
-
-    None
-}
-
-/// Check if a path is within the current workspace.
-fn is_within_workspace(path: &str) -> bool {
-    let path = PathBuf::from(path);
-
-    // If path is absolute, check if it starts with CWD
-    if path.is_absolute() {
-        if let Ok(cwd) = std::env::current_dir() {
-            return path.starts_with(&cwd);
-        }
-    }
-
-    // Relative paths are assumed to be within workspace
-    !path.starts_with("/") && !path.starts_with("\\") && !path.starts_with("..")
-}
-
-fn run_powershell(input: PowerShellInput) -> Result<String, String> {
-    to_pretty_json(execute_powershell(input).map_err(|error| error.to_string())?)
-}
-
-fn to_pretty_json<T: serde::Serialize>(value: T) -> Result<String, String> {
+pub(crate) fn to_pretty_json<T: serde::Serialize>(value: T) -> Result<String, String> {
     serde_json::to_string_pretty(&value).map_err(|error| error.to_string())
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn io_to_string(error: std::io::Error) -> String {
+pub(crate) fn io_to_string(error: std::io::Error) -> String {
     error.to_string()
 }
 
-#[derive(Debug, Deserialize)]
-struct ReadFileInput {
-    path: String,
-    offset: Option<usize>,
-    limit: Option<usize>,
-}
-
-#[derive(Debug, Deserialize)]
-struct WriteFileInput {
-    path: String,
-    content: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct EditFileInput {
-    path: String,
-    old_string: String,
-    new_string: String,
-    replace_all: Option<bool>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GlobSearchInputValue {
-    pattern: String,
-    path: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct WebFetchInput {
-    url: String,
-    prompt: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct WebSearchInput {
-    query: String,
-    allowed_domains: Option<Vec<String>>,
-    blocked_domains: Option<Vec<String>>,
-}
 
 #[derive(Debug, Deserialize)]
 struct TodoWriteInput {
@@ -2409,172 +1513,6 @@ struct ReplInput {
     timeout_ms: Option<u64>,
 }
 
-#[derive(Debug, Deserialize)]
-struct PowerShellInput {
-    command: String,
-    timeout: Option<u64>,
-    description: Option<String>,
-    run_in_background: Option<bool>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AskUserQuestionInput {
-    question: String,
-    #[serde(default)]
-    options: Option<Vec<String>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct TaskCreateInput {
-    prompt: String,
-    #[serde(default)]
-    description: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct TaskIdInput {
-    task_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct TaskUpdateInput {
-    task_id: String,
-    message: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct WorkerCreateInput {
-    cwd: String,
-    #[serde(default)]
-    trusted_roots: Vec<String>,
-    #[serde(default = "default_auto_recover_prompt_misdelivery")]
-    auto_recover_prompt_misdelivery: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct WorkerIdInput {
-    worker_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct WorkerObserveCompletionInput {
-    worker_id: String,
-    finish_reason: String,
-    tokens_output: u64,
-}
-
-#[derive(Debug, Deserialize)]
-struct WorkerObserveInput {
-    worker_id: String,
-    screen_text: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct WorkerSendPromptInput {
-    worker_id: String,
-    #[serde(default)]
-    prompt: Option<String>,
-    #[serde(default)]
-    task_receipt: Option<WorkerTaskReceipt>,
-}
-
-const fn default_auto_recover_prompt_misdelivery() -> bool {
-    true
-}
-
-#[derive(Debug, Deserialize)]
-struct TeamCreateInput {
-    name: String,
-    tasks: Vec<Value>,
-}
-
-#[derive(Debug, Deserialize)]
-struct TeamDeleteInput {
-    team_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct CronCreateInput {
-    schedule: String,
-    prompt: String,
-    #[serde(default)]
-    description: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct CronDeleteInput {
-    cron_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct LspInput {
-    action: String,
-    #[serde(default)]
-    path: Option<String>,
-    #[serde(default)]
-    line: Option<u32>,
-    #[serde(default)]
-    character: Option<u32>,
-    #[serde(default)]
-    query: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct McpResourceInput {
-    #[serde(default)]
-    server: Option<String>,
-    #[serde(default)]
-    uri: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct McpAuthInput {
-    server: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct RemoteTriggerInput {
-    url: String,
-    #[serde(default)]
-    method: Option<String>,
-    #[serde(default)]
-    headers: Option<Value>,
-    #[serde(default)]
-    body: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct McpToolInput {
-    server: String,
-    tool: String,
-    #[serde(default)]
-    arguments: Option<Value>,
-}
-
-#[derive(Debug, Deserialize)]
-struct TestingPermissionInput {
-    action: String,
-}
-
-#[derive(Debug, Serialize)]
-struct WebFetchOutput {
-    bytes: usize,
-    code: u16,
-    #[serde(rename = "codeText")]
-    code_text: String,
-    result: String,
-    #[serde(rename = "durationMs")]
-    duration_ms: u128,
-    url: String,
-}
-
-#[derive(Debug, Serialize)]
-struct WebSearchOutput {
-    query: String,
-    results: Vec<WebSearchResultItem>,
-    #[serde(rename = "durationSeconds")]
-    duration_seconds: f64,
-}
 
 #[derive(Debug, Serialize)]
 struct TodoWriteOutput {
@@ -2744,404 +1682,6 @@ struct ReplOutput {
     duration_ms: u128,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(untagged)]
-enum WebSearchResultItem {
-    SearchResult {
-        tool_use_id: String,
-        content: Vec<SearchHit>,
-    },
-    Commentary(String),
-}
-
-#[derive(Debug, Serialize)]
-struct SearchHit {
-    title: String,
-    url: String,
-}
-
-fn execute_web_fetch(input: &WebFetchInput) -> Result<WebFetchOutput, String> {
-    let started = Instant::now();
-    let client = build_http_client()?;
-    let request_url = normalize_fetch_url(&input.url)?;
-    let response = client
-        .get(request_url.clone())
-        .send()
-        .map_err(|error| error.to_string())?;
-
-    let status = response.status();
-    let final_url = response.url().to_string();
-    let code = status.as_u16();
-    let code_text = status.canonical_reason().unwrap_or("Unknown").to_string();
-    let content_type = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default()
-        .to_string();
-    let body = response.text().map_err(|error| error.to_string())?;
-    let bytes = body.len();
-    let normalized = normalize_fetched_content(&body, &content_type);
-    let result = summarize_web_fetch(&final_url, &input.prompt, &normalized, &body, &content_type);
-
-    Ok(WebFetchOutput {
-        bytes,
-        code,
-        code_text,
-        result,
-        duration_ms: started.elapsed().as_millis(),
-        url: final_url,
-    })
-}
-
-fn execute_web_search(input: &WebSearchInput) -> Result<WebSearchOutput, String> {
-    let started = Instant::now();
-    let client = build_http_client()?;
-    let search_url = build_search_url(&input.query)?;
-    let response = client
-        .get(search_url)
-        .send()
-        .map_err(|error| error.to_string())?;
-
-    let final_url = response.url().clone();
-    let html = response.text().map_err(|error| error.to_string())?;
-    let mut hits = extract_search_hits(&html);
-
-    if hits.is_empty() && final_url.host_str().is_some() {
-        hits = extract_search_hits_from_generic_links(&html);
-    }
-
-    if let Some(allowed) = input.allowed_domains.as_ref() {
-        hits.retain(|hit| host_matches_list(&hit.url, allowed));
-    }
-    if let Some(blocked) = input.blocked_domains.as_ref() {
-        hits.retain(|hit| !host_matches_list(&hit.url, blocked));
-    }
-
-    dedupe_hits(&mut hits);
-    hits.truncate(8);
-
-    let summary = if hits.is_empty() {
-        format!("No web search results matched the query {:?}.", input.query)
-    } else {
-        let rendered_hits = hits
-            .iter()
-            .map(|hit| format!("- [{}]({})", hit.title, hit.url))
-            .collect::<Vec<_>>()
-            .join("\n");
-        format!(
-            "Search results for {:?}. Include a Sources section in the final answer.\n{}",
-            input.query, rendered_hits
-        )
-    };
-
-    Ok(WebSearchOutput {
-        query: input.query.clone(),
-        results: vec![
-            WebSearchResultItem::Commentary(summary),
-            WebSearchResultItem::SearchResult {
-                tool_use_id: String::from("web_search_1"),
-                content: hits,
-            },
-        ],
-        duration_seconds: started.elapsed().as_secs_f64(),
-    })
-}
-
-fn build_http_client() -> Result<Client, String> {
-    Client::builder()
-        .timeout(Duration::from_secs(20))
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .user_agent("clawd-rust-tools/0.1")
-        .build()
-        .map_err(|error| error.to_string())
-}
-
-fn normalize_fetch_url(url: &str) -> Result<String, String> {
-    let parsed = reqwest::Url::parse(url).map_err(|error| error.to_string())?;
-    if parsed.scheme() == "http" {
-        let host = parsed.host_str().unwrap_or_default();
-        if host != "localhost" && host != "127.0.0.1" && host != "::1" {
-            let mut upgraded = parsed;
-            upgraded
-                .set_scheme("https")
-                .map_err(|()| String::from("failed to upgrade URL to https"))?;
-            return Ok(upgraded.to_string());
-        }
-    }
-    Ok(parsed.to_string())
-}
-
-fn build_search_url(query: &str) -> Result<reqwest::Url, String> {
-    if let Ok(base) = std::env::var("CLAWD_WEB_SEARCH_BASE_URL") {
-        let mut url = reqwest::Url::parse(&base).map_err(|error| error.to_string())?;
-        url.query_pairs_mut().append_pair("q", query);
-        return Ok(url);
-    }
-
-    let mut url = reqwest::Url::parse("https://html.duckduckgo.com/html/")
-        .map_err(|error| error.to_string())?;
-    url.query_pairs_mut().append_pair("q", query);
-    Ok(url)
-}
-
-fn normalize_fetched_content(body: &str, content_type: &str) -> String {
-    if content_type.contains("html") {
-        html_to_text(body)
-    } else {
-        body.trim().to_string()
-    }
-}
-
-fn summarize_web_fetch(
-    url: &str,
-    prompt: &str,
-    content: &str,
-    raw_body: &str,
-    content_type: &str,
-) -> String {
-    let lower_prompt = prompt.to_lowercase();
-    let compact = collapse_whitespace(content);
-
-    let detail = if lower_prompt.contains("title") {
-        extract_title(content, raw_body, content_type).map_or_else(
-            || preview_text(&compact, 600),
-            |title| format!("Title: {title}"),
-        )
-    } else if lower_prompt.contains("summary") || lower_prompt.contains("summarize") {
-        preview_text(&compact, 900)
-    } else {
-        let preview = preview_text(&compact, 900);
-        format!("Prompt: {prompt}\nContent preview:\n{preview}")
-    };
-
-    format!("Fetched {url}\n{detail}")
-}
-
-fn extract_title(content: &str, raw_body: &str, content_type: &str) -> Option<String> {
-    if content_type.contains("html") {
-        let lowered = raw_body.to_lowercase();
-        if let Some(start) = lowered.find("<title>") {
-            let after = start + "<title>".len();
-            if let Some(end_rel) = lowered[after..].find("</title>") {
-                let title =
-                    collapse_whitespace(&decode_html_entities(&raw_body[after..after + end_rel]));
-                if !title.is_empty() {
-                    return Some(title);
-                }
-            }
-        }
-    }
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_string());
-        }
-    }
-    None
-}
-
-fn html_to_text(html: &str) -> String {
-    let mut text = String::with_capacity(html.len());
-    let mut in_tag = false;
-    let mut previous_was_space = false;
-
-    for ch in html.chars() {
-        match ch {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            _ if in_tag => {}
-            '&' => {
-                text.push('&');
-                previous_was_space = false;
-            }
-            ch if ch.is_whitespace() => {
-                if !previous_was_space {
-                    text.push(' ');
-                    previous_was_space = true;
-                }
-            }
-            _ => {
-                text.push(ch);
-                previous_was_space = false;
-            }
-        }
-    }
-
-    collapse_whitespace(&decode_html_entities(&text))
-}
-
-fn decode_html_entities(input: &str) -> String {
-    input
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&nbsp;", " ")
-}
-
-fn collapse_whitespace(input: &str) -> String {
-    input.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn preview_text(input: &str, max_chars: usize) -> String {
-    if input.chars().count() <= max_chars {
-        return input.to_string();
-    }
-    let shortened = input.chars().take(max_chars).collect::<String>();
-    format!("{}…", shortened.trim_end())
-}
-
-fn extract_search_hits(html: &str) -> Vec<SearchHit> {
-    let mut hits = Vec::new();
-    let mut remaining = html;
-
-    while let Some(anchor_start) = remaining.find("result__a") {
-        let after_class = &remaining[anchor_start..];
-        let Some(href_idx) = after_class.find("href=") else {
-            remaining = &after_class[1..];
-            continue;
-        };
-        let href_slice = &after_class[href_idx + 5..];
-        let Some((url, rest)) = extract_quoted_value(href_slice) else {
-            remaining = &after_class[1..];
-            continue;
-        };
-        let Some(close_tag_idx) = rest.find('>') else {
-            remaining = &after_class[1..];
-            continue;
-        };
-        let after_tag = &rest[close_tag_idx + 1..];
-        let Some(end_anchor_idx) = after_tag.find("</a>") else {
-            remaining = &after_tag[1..];
-            continue;
-        };
-        let title = html_to_text(&after_tag[..end_anchor_idx]);
-        if let Some(decoded_url) = decode_duckduckgo_redirect(&url) {
-            hits.push(SearchHit {
-                title: title.trim().to_string(),
-                url: decoded_url,
-            });
-        }
-        remaining = &after_tag[end_anchor_idx + 4..];
-    }
-
-    hits
-}
-
-fn extract_search_hits_from_generic_links(html: &str) -> Vec<SearchHit> {
-    let mut hits = Vec::new();
-    let mut remaining = html;
-
-    while let Some(anchor_start) = remaining.find("<a") {
-        let after_anchor = &remaining[anchor_start..];
-        let Some(href_idx) = after_anchor.find("href=") else {
-            remaining = &after_anchor[2..];
-            continue;
-        };
-        let href_slice = &after_anchor[href_idx + 5..];
-        let Some((url, rest)) = extract_quoted_value(href_slice) else {
-            remaining = &after_anchor[2..];
-            continue;
-        };
-        let Some(close_tag_idx) = rest.find('>') else {
-            remaining = &after_anchor[2..];
-            continue;
-        };
-        let after_tag = &rest[close_tag_idx + 1..];
-        let Some(end_anchor_idx) = after_tag.find("</a>") else {
-            remaining = &after_anchor[2..];
-            continue;
-        };
-        let title = html_to_text(&after_tag[..end_anchor_idx]);
-        if title.trim().is_empty() {
-            remaining = &after_tag[end_anchor_idx + 4..];
-            continue;
-        }
-        let decoded_url = decode_duckduckgo_redirect(&url).unwrap_or(url);
-        if decoded_url.starts_with("http://") || decoded_url.starts_with("https://") {
-            hits.push(SearchHit {
-                title: title.trim().to_string(),
-                url: decoded_url,
-            });
-        }
-        remaining = &after_tag[end_anchor_idx + 4..];
-    }
-
-    hits
-}
-
-fn extract_quoted_value(input: &str) -> Option<(String, &str)> {
-    let quote = input.chars().next()?;
-    if quote != '"' && quote != '\'' {
-        return None;
-    }
-    let rest = &input[quote.len_utf8()..];
-    let end = rest.find(quote)?;
-    Some((rest[..end].to_string(), &rest[end + quote.len_utf8()..]))
-}
-
-fn decode_duckduckgo_redirect(url: &str) -> Option<String> {
-    if url.starts_with("http://") || url.starts_with("https://") {
-        return Some(html_entity_decode_url(url));
-    }
-
-    let joined = if url.starts_with("//") {
-        format!("https:{url}")
-    } else if url.starts_with('/') {
-        format!("https://duckduckgo.com{url}")
-    } else {
-        return None;
-    };
-
-    let parsed = reqwest::Url::parse(&joined).ok()?;
-    if parsed.path() == "/l/" || parsed.path() == "/l" {
-        for (key, value) in parsed.query_pairs() {
-            if key == "uddg" {
-                return Some(html_entity_decode_url(value.as_ref()));
-            }
-        }
-    }
-    Some(joined)
-}
-
-fn html_entity_decode_url(url: &str) -> String {
-    decode_html_entities(url)
-}
-
-fn host_matches_list(url: &str, domains: &[String]) -> bool {
-    let Ok(parsed) = reqwest::Url::parse(url) else {
-        return false;
-    };
-    let Some(host) = parsed.host_str() else {
-        return false;
-    };
-    let host = host.to_ascii_lowercase();
-    domains.iter().any(|domain| {
-        let normalized = normalize_domain_filter(domain);
-        !normalized.is_empty() && (host == normalized || host.ends_with(&format!(".{normalized}")))
-    })
-}
-
-fn normalize_domain_filter(domain: &str) -> String {
-    let trimmed = domain.trim();
-    let candidate = reqwest::Url::parse(trimmed)
-        .ok()
-        .and_then(|url| url.host_str().map(str::to_string))
-        .unwrap_or_else(|| trimmed.to_string());
-    candidate
-        .trim()
-        .trim_start_matches('.')
-        .trim_end_matches('/')
-        .to_ascii_lowercase()
-}
-
-fn dedupe_hits(hits: &mut Vec<SearchHit>) {
-    let mut seen = BTreeSet::new();
-    hits.retain(|hit| seen.insert(hit.url.clone()));
-}
 
 fn execute_todo_write(input: TodoWriteInput) -> Result<TodoWriteOutput, String> {
     validate_todos(&input.todos)?;
@@ -5079,7 +3619,7 @@ fn normalize_subagent_type(subagent_type: Option<&str>) -> String {
     }
 }
 
-fn iso8601_now() -> String {
+pub(crate) fn iso8601_now() -> String {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -5921,174 +4461,6 @@ fn iso8601_timestamp() -> String {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn execute_powershell(input: PowerShellInput) -> std::io::Result<runtime::BashCommandOutput> {
-    let _ = &input.description;
-    if let Some(output) = workspace_test_branch_preflight(&input.command) {
-        return Ok(output);
-    }
-    let shell = detect_powershell_shell()?;
-    execute_shell_command(
-        shell,
-        &input.command,
-        input.timeout,
-        input.run_in_background,
-    )
-}
-
-fn detect_powershell_shell() -> std::io::Result<&'static str> {
-    if command_exists("pwsh") {
-        Ok("pwsh")
-    } else if command_exists("powershell") {
-        Ok("powershell")
-    } else {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "PowerShell executable not found (expected `pwsh` or `powershell` in PATH)",
-        ))
-    }
-}
-
-fn command_exists(command: &str) -> bool {
-    std::process::Command::new("sh")
-        .arg("-lc")
-        .arg(format!("command -v {command} >/dev/null 2>&1"))
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
-}
-
-#[allow(clippy::too_many_lines)]
-fn execute_shell_command(
-    shell: &str,
-    command: &str,
-    timeout: Option<u64>,
-    run_in_background: Option<bool>,
-) -> std::io::Result<runtime::BashCommandOutput> {
-    if run_in_background.unwrap_or(false) {
-        let child = std::process::Command::new(shell)
-            .arg("-NoProfile")
-            .arg("-NonInteractive")
-            .arg("-Command")
-            .arg(command)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()?;
-        return Ok(runtime::BashCommandOutput {
-            stdout: String::new(),
-            stderr: String::new(),
-            raw_output_path: None,
-            interrupted: false,
-            is_image: None,
-            background_task_id: Some(child.id().to_string()),
-            backgrounded_by_user: Some(true),
-            assistant_auto_backgrounded: Some(false),
-            dangerously_disable_sandbox: None,
-            return_code_interpretation: None,
-            no_output_expected: Some(true),
-            structured_content: None,
-            persisted_output_path: None,
-            persisted_output_size: None,
-            sandbox_status: None,
-        });
-    }
-
-    let mut process = std::process::Command::new(shell);
-    process
-        .arg("-NoProfile")
-        .arg("-NonInteractive")
-        .arg("-Command")
-        .arg(command);
-    process
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-
-    if let Some(timeout_ms) = timeout {
-        let mut child = process.spawn()?;
-        let started = Instant::now();
-        loop {
-            if let Some(status) = child.try_wait()? {
-                let output = child.wait_with_output()?;
-                return Ok(runtime::BashCommandOutput {
-                    stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-                    stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-                    raw_output_path: None,
-                    interrupted: false,
-                    is_image: None,
-                    background_task_id: None,
-                    backgrounded_by_user: None,
-                    assistant_auto_backgrounded: None,
-                    dangerously_disable_sandbox: None,
-                    return_code_interpretation: status
-                        .code()
-                        .filter(|code| *code != 0)
-                        .map(|code| format!("exit_code:{code}")),
-                    no_output_expected: Some(output.stdout.is_empty() && output.stderr.is_empty()),
-                    structured_content: None,
-                    persisted_output_path: None,
-                    persisted_output_size: None,
-                    sandbox_status: None,
-                });
-            }
-            if started.elapsed() >= Duration::from_millis(timeout_ms) {
-                let _ = child.kill();
-                let output = child.wait_with_output()?;
-                let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-                let stderr = if stderr.trim().is_empty() {
-                    format!("Command exceeded timeout of {timeout_ms} ms")
-                } else {
-                    format!(
-                        "{}
-Command exceeded timeout of {timeout_ms} ms",
-                        stderr.trim_end()
-                    )
-                };
-                return Ok(runtime::BashCommandOutput {
-                    stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-                    stderr,
-                    raw_output_path: None,
-                    interrupted: true,
-                    is_image: None,
-                    background_task_id: None,
-                    backgrounded_by_user: None,
-                    assistant_auto_backgrounded: None,
-                    dangerously_disable_sandbox: None,
-                    return_code_interpretation: Some(String::from("timeout")),
-                    no_output_expected: Some(false),
-                    structured_content: None,
-                    persisted_output_path: None,
-                    persisted_output_size: None,
-                    sandbox_status: None,
-                });
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    }
-
-    let output = process.output()?;
-    Ok(runtime::BashCommandOutput {
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        raw_output_path: None,
-        interrupted: false,
-        is_image: None,
-        background_task_id: None,
-        backgrounded_by_user: None,
-        assistant_auto_backgrounded: None,
-        dangerously_disable_sandbox: None,
-        return_code_interpretation: output
-            .status
-            .code()
-            .filter(|code| *code != 0)
-            .map(|code| format!("exit_code:{code}")),
-        no_output_expected: Some(output.stdout.is_empty() && output.stderr.is_empty()),
-        structured_content: None,
-        persisted_output_path: None,
-        persisted_output_size: None,
-        sandbox_status: None,
-    })
-}
-
 fn resolve_cell_index(
     cells: &[serde_json::Value],
     cell_id: Option<&str>,
@@ -6167,10 +4539,12 @@ mod tests {
         derive_agent_state, execute_agent_with_spawn, execute_tool, extract_recovery_outcome,
         final_assistant_text, global_cron_registry, maybe_commit_provenance, mvp_tool_specs,
         permission_mode_from_plugin, persist_agent_terminal_state, push_output_block,
-        run_task_packet, AgentInput, AgentJob, GlobalToolRegistry, LaneEventName, LaneFailureClass,
+        AgentInput, AgentJob, GlobalToolRegistry, LaneFailureClass,
         ProviderRuntimeClient, SubagentToolExecutor,
     };
+    use super::task_tools::run_task_packet;
     use api::OutputContentBlock;
+    use runtime::LaneEventName;
     use runtime::ProviderFallbackConfig;
     use runtime::{
         permission_enforcer::PermissionEnforcer, ApiRequest, AssistantEvent, ConversationRuntime,
