@@ -34,13 +34,51 @@
 
 ## 近期优先事项
 
-### 高优先级 — 代码结构优化
+### 高优先级 — 拆分 main.rs (12,714行 → ~7,000行)
 
-1. **[ ] 拆分 main.rs (12,714行)** — 将 CLI 参数解析、Doctor、Server、Telegram handler 分别提取为独立模块
-2. **[ ] 拆分 tools/lib.rs (9,779行)** — 按工具类别拆分，降低文件复杂度
-3. **[ ] MCP 测试分离** — 将 `mcp_stdio.rs` 中大量测试（~60% 代码）移到独立测试文件
+main.rs 当前是一个巨型单体文件，涵盖 6 个独立职责域。按以下顺序逐步提取：
 
-### 中优先级 — 功能增强
+#### 阶段 1：`doctor.rs` (~960行) ← 现在开始
+- 提取 `DiagnosticLevel`、`DiagnosticCheck`、`DoctorReport` 类型及 impl
+- 提取所有 `check_*_health()` 函数（auth, config, install, workspace, sandbox, branch, plugin_mcp, trust, system）
+- 提取 `render_diagnostic_check()`、`render_doctor_report()`、`run_doctor()`
+- 删掉 `parse_doctor_args` → 已在 `parse_args` 中，不重复提取
+- **验收**：`cargo check` + 现有测试通过
+
+#### 阶段 2：`args.rs` (~1,016行)
+- 提取 `parse_args()` 及所有 `parse_*_args()` 变体（acp, export, dump_manifests, telegram, server, resume, system_prompt）
+- 提取 `CliOutputFormat`、`CliAction`（如果尚未独立）
+- 提取建议/格式化辅助函数（`format_unknown_option`, `suggest_slash_commands`, `levenshtein_distance` 等）
+- **验收**：`cargo check` + 所有参数解析测试通过
+
+#### 阶段 3：`format.rs` (~300行)
+- 提取 `format_model_report`, `format_permissions_report`, `format_cost_report`, `format_resume_report`, `format_compact_report`, `format_auto_compaction_notice` 等
+- 提取 `GitWorkspaceSummary`
+- **验收**：`cargo check` + 格式化测试通过
+
+#### 阶段 4：`server.rs` (~200行)
+- 提取 `run_server()`, `run_worker_state()`, `run_mcp_serve()`
+- **验收**：`cargo check`
+
+#### 阶段 5：`telegram_handler.rs` (~140行)
+- 提取 `ClawMessageHandler` + `impl MessageHandler for ClawMessageHandler`
+- **验收**：`cargo check`
+
+#### 最终目标
+```
+src/
+├── main.rs          (~7,000行, 仅保留 REPL/core/测试)
+├── doctor.rs        (~960行)
+├── args.rs          (~1,016行)  
+├── format.rs        (~300行)
+├── server.rs        (~200行)
+├── telegram_handler.rs (~140行)
+├── init.rs          (已有)
+├── input.rs         (已有)
+└── render.rs        (已有)
+```
+
+### 中优先级 — 拆分 tools/lib.rs (9,779行)
 
 4. **[ ] 模型配置 UI** — `/model` 命令显示自定义提供商和路由规则
 5. **[ ] 提供商健康检查** — 在启动时验证配置的提供商连接
