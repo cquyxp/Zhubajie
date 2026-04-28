@@ -45,37 +45,39 @@ main.rs 当前是一个巨型单体文件，涵盖 6 个独立职责域。按以
 - **结果**：main.rs 12714 → 11949行 (-771行)，doctor.rs 789行
 - **验证**：cargo check ✅ | 161/165 测试通过（4个预存失败）
 
-#### 阶段 2：`args.rs` (~1,016行)
+#### 阶段 2：`args.rs` (~1,012行) ✅ 已完成
 - 提取 `parse_args()` 及所有 `parse_*_args()` 变体（acp, export, dump_manifests, telegram, server, resume, system_prompt）
-- 提取 `CliOutputFormat`、`CliAction`（如果尚未独立）
+- 提取 `CliOutputFormat`、`CliAction`（17个变体）、`LocalHelpTopic`
 - 提取建议/格式化辅助函数（`format_unknown_option`, `suggest_slash_commands`, `levenshtein_distance` 等）
-- **验收**：`cargo check` + 所有参数解析测试通过
+- **结果**：main.rs 11949 → 10763行 (-1186行)，args.rs 1212行
+- **验证**：cargo check ✅ | 162/165 测试通过（3个预存失败）
 
-#### 阶段 3：`format.rs` (~300行)
+#### 阶段 3：`format.rs` (~231行) ✅ 已完成
 - 提取 `format_model_report`, `format_permissions_report`, `format_cost_report`, `format_resume_report`, `format_compact_report`, `format_auto_compaction_notice` 等
-- 提取 `GitWorkspaceSummary`
-- **验收**：`cargo check` + 格式化测试通过
+- 提取 `GitWorkspaceSummary` 及其 git 状态解析函数
+- **结果**：main.rs 10763 → 10467行 (-296行)，format.rs 231行
 
-#### 阶段 4：`server.rs` (~200行)
+#### 阶段 4：`server.rs` (~78行) ✅ 已完成
 - 提取 `run_server()`, `run_worker_state()`, `run_mcp_serve()`
-- **验收**：`cargo check`
+- **结果**：main.rs 10467 → 10391行 (-76行)，server.rs 78行
 
-#### 阶段 5：`telegram_handler.rs` (~140行)
+#### 阶段 5：`telegram_handler.rs` (~138行) ✅ 已完成
 - 提取 `ClawMessageHandler` + `impl MessageHandler for ClawMessageHandler`
-- **验收**：`cargo check`
+- 提取 `run_telegram()`
+- **结果**：main.rs 10391 → 10327行 (-64行)，telegram_handler.rs 138行
 
-#### 最终目标
+#### 最终目标 ✅ 已完成所有阶段
 ```
 src/
-├── main.rs          (~7,000行, 仅保留 REPL/core/测试)
-├── doctor.rs        (~960行)
-├── args.rs          (~1,016行)  
-├── format.rs        (~300行)
-├── server.rs        (~200行)
-├── telegram_handler.rs (~140行)
-├── init.rs          (已有)
-├── input.rs         (已有)
-└── render.rs        (已有)
+├── main.rs          (~10,327行, 剩余 REPL/core/测试)
+├── doctor.rs        (~789行)
+├── args.rs          (~1,212行)
+├── format.rs        (~231行)
+├── server.rs        (~78行)
+├── telegram_handler.rs (~138行)
+├── init.rs          (已有, ~436行)
+├── input.rs         (已有, ~330行)
+└── render.rs        (已有, ~1,070行)
 ```
 
 ### 中优先级 — 拆分 tools/lib.rs (9,779行)
