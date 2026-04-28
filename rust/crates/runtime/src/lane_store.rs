@@ -202,6 +202,7 @@ impl LaneStore {
 mod tests {
     use super::*;
     use crate::lane_events::{EventProvenance, LaneEventBuilder};
+    use crate::LaneEventName;
     use tempfile::tempdir;
 
     #[test]

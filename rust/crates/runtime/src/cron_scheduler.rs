@@ -261,7 +261,7 @@ mod tests {
     fn is_due_after_last_run() {
         let schedule = parse_cron_schedule("* * * * *").unwrap();
         let now = Local::now();
-        let two_hours_ago = (now - ChronoDuration::hours(2)).timestamp() as u64;
+        let two_hours_ago = (now - chrono::TimeDelta::hours(2)).timestamp() as u64;
         // Last run was 2 hours ago, should be due now
         assert!(is_due(&schedule, &now, Some(two_hours_ago)));
     }
@@ -270,7 +270,7 @@ mod tests {
     fn is_due_not_yet_time() {
         let schedule = parse_cron_schedule("0 0 1 1 *").unwrap(); // Jan 1 midnight
         let now = Local::now();
-        let one_hour_ago = (now - ChronoDuration::hours(1)).timestamp() as u64;
+        let one_hour_ago = (now - chrono::TimeDelta::hours(1)).timestamp() as u64;
         // Last run was 1 hour ago, next run is far in future
         assert!(!is_due(&schedule, &now, Some(one_hour_ago)));
     }

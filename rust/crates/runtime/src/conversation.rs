@@ -61,7 +61,12 @@ pub struct MessageResponse {
 /// Minimal streaming API contract required by [`ConversationRuntime`].
 pub trait ApiClient {
     fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError>;
-    fn send_message(&mut self, request: ApiRequest) -> Result<MessageResponse, RuntimeError>;
+
+    fn send_message(&mut self, _request: ApiRequest) -> Result<MessageResponse, RuntimeError> {
+        Err(RuntimeError::new(
+            "send_message not implemented for this client",
+        ))
+    }
 }
 
 /// Trait implemented by tool dispatchers that execute model-requested tools.
@@ -879,7 +884,7 @@ mod tests {
         AssistantEvent, AutoCompactionEvent, ConversationRuntime, PromptCacheEvent, RuntimeError,
         StaticToolExecutor, ToolExecutor, DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD,
     };
-    use crate::compact::CompactionConfig;
+    use crate::compact::{CompactionConfig, CompactionMode};
     use crate::config::{RuntimeFeatureConfig, RuntimeHookConfig};
     use crate::permissions::{
         PermissionMode, PermissionPolicy, PermissionPromptDecision, PermissionPrompter,
@@ -1605,6 +1610,8 @@ mod tests {
             summary.auto_compaction,
             Some(AutoCompactionEvent {
                 removed_message_count: 2,
+                compaction_mode: CompactionMode::Heuristic,
+                llm_usage: None,
             })
         );
         assert_eq!(runtime.session().messages[0].role, MessageRole::System);

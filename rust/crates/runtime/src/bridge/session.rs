@@ -363,6 +363,7 @@ impl SessionCleanup {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bridge::types::{AuthConfig, SourceConfig};
 
     #[test]
     fn test_session_spawner_new() {
