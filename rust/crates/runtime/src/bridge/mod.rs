@@ -28,7 +28,6 @@ pub fn get_hostname() -> String {
 use std::sync::Arc;
 use std::time::Duration;
 
-
 /// Bridge runtime error
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum BridgeError {

@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use plugins::{PluginError, PluginLoadFailure, PluginManager, PluginSummary};
 use runtime::{
-    compact_session_legacy, CompactionConfig, ConfigLoader, ConfigSource, McpOAuthConfig, McpServerConfig,
-    ScopedMcpServerConfig, Session,
+    compact_session_legacy, CompactionConfig, ConfigLoader, ConfigSource, McpOAuthConfig,
+    McpServerConfig, ScopedMcpServerConfig, Session,
 };
 use serde_json::{json, Value};
 

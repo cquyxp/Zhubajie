@@ -134,10 +134,7 @@ pub struct RetryResult<T, E> {
 }
 
 /// Execute a retryable operation with the given policy.
-pub async fn retry_with_policy<T, E, F, Fut>(
-    mut policy: RetryPolicy,
-    op: F,
-) -> RetryResult<T, E>
+pub async fn retry_with_policy<T, E, F, Fut>(mut policy: RetryPolicy, op: F) -> RetryResult<T, E>
 where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = Result<T, E>>,

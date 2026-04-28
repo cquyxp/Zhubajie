@@ -105,8 +105,12 @@ impl ErrorGuide {
     pub fn permission_denied(path: &Path, action: &str) -> GuidedError {
         GuidedError {
             message: format!("权限不足，无法 {}: {}", action, path.display()),
-            suggestion: Some("请检查文件/目录权限，或者使用 --permission-mode danger-full-access".to_string()),
-            doc_link: Some("https://github.com/cquyxp/Zhubajie#model-and-permission-controls".to_string()),
+            suggestion: Some(
+                "请检查文件/目录权限，或者使用 --permission-mode danger-full-access".to_string(),
+            ),
+            doc_link: Some(
+                "https://github.com/cquyxp/Zhubajie#model-and-permission-controls".to_string(),
+            ),
             error_code: Some("E_PERMISSION_DENIED".to_string()),
         }
     }
@@ -116,7 +120,9 @@ impl ErrorGuide {
         GuidedError {
             message: format!("不支持的模型: {}", model),
             suggestion: Some("可用模型: opus, sonnet, haiku, grok, 或使用完整模型名称".to_string()),
-            doc_link: Some("https://github.com/cquyxp/Zhubajie#supported-providers--models".to_string()),
+            doc_link: Some(
+                "https://github.com/cquyxp/Zhubajie#supported-providers--models".to_string(),
+            ),
             error_code: Some("E_MODEL_NOT_SUPPORTED".to_string()),
         }
     }
@@ -134,7 +140,10 @@ impl ErrorGuide {
     /// API 限流
     pub fn rate_limited(retry_after: Option<u64>) -> GuidedError {
         let suggestion = if let Some(seconds) = retry_after {
-            format!("请等待 {} 秒后重试，或者考虑使用 --model 切换到其他模型", seconds)
+            format!(
+                "请等待 {} 秒后重试，或者考虑使用 --model 切换到其他模型",
+                seconds
+            )
         } else {
             "请稍后重试，或者考虑使用 --model 切换到其他模型".to_string()
         };
@@ -160,7 +169,9 @@ impl ErrorGuide {
     pub fn session_corrupted(path: &Path) -> GuidedError {
         GuidedError {
             message: format!("会话文件损坏: {}", path.display()),
-            suggestion: Some("可以尝试删除该会话文件，或者使用 --resume latest 恢复其他会话".to_string()),
+            suggestion: Some(
+                "可以尝试删除该会话文件，或者使用 --resume latest 恢复其他会话".to_string(),
+            ),
             doc_link: None,
             error_code: Some("E_SESSION_CORRUPTED".to_string()),
         }

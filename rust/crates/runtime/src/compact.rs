@@ -161,7 +161,6 @@ pub fn get_compact_continuation_message(
     base
 }
 
-
 fn compacted_summary_prefix_len(session: &Session) -> usize {
     usize::from(
         session
@@ -562,7 +561,6 @@ fn ensure_tool_result_pairing(
     }
     keep_from
 }
-
 
 /// Multi-mode session compression entry point
 pub fn compact_session(

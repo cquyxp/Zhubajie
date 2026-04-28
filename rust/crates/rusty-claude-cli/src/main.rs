@@ -41,13 +41,13 @@ use compat_harness::{extract_manifest, UpstreamPaths};
 use init::initialize_repo;
 use plugins::{PluginHooks, PluginManager, PluginManagerConfig, PluginRegistry};
 use render::{MarkdownStreamState, Spinner, TerminalRenderer};
-use runtime::bridge::{
-    validate_bridge_id, BridgeApiClient, BridgeConfig, BridgeHttpClient, BridgeLoopEvent,
-    BridgeLoopOptions, BridgeManager, BridgeRuntime, BridgeWorkerType,
-    SpawnMode, WorkResponse, WorkSecret,
-};
 use runtime::bridge::ingress::{IngressConfig, IngressEvent, IngressSender, SessionIngress};
 use runtime::bridge::session::{SessionCreateError, SessionSpawner, SpawnedSession};
+use runtime::bridge::{
+    validate_bridge_id, BridgeApiClient, BridgeConfig, BridgeHttpClient, BridgeLoopEvent,
+    BridgeLoopOptions, BridgeManager, BridgeRuntime, BridgeWorkerType, SpawnMode, WorkResponse,
+    WorkSecret,
+};
 use runtime::{
     check_base_commit, check_freshness, format_stale_base_warning, format_usd,
     load_oauth_credentials, load_system_prompt, pricing_for_model, resolve_expected_base,
@@ -203,9 +203,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?;
-            tokio_runtime.block_on(run_telegram(token, allowed_users, model, permission_mode, output_format))?;
+            tokio_runtime.block_on(run_telegram(
+                token,
+                allowed_users,
+                model,
+                permission_mode,
+                output_format,
+            ))?;
         }
-        CliAction::Server { port, output_format } => run_server(port, output_format)?,
+        CliAction::Server {
+            port,
+            output_format,
+        } => run_server(port, output_format)?,
         CliAction::DumpManifests {
             output_format,
             manifests_dir,
@@ -1140,7 +1149,7 @@ fn default_permission_mode() -> PermissionMode {
         .and_then(normalize_permission_mode)
         .map(permission_mode_from_label)
         .or_else(config_permission_mode_for_current_dir)
-        .unwrap_or(PermissionMode::DangerFullAccess)
+        .unwrap_or(PermissionMode::WorkspaceWrite)
 }
 
 fn config_permission_mode_for_current_dir() -> Option<PermissionMode> {
@@ -1313,7 +1322,10 @@ fn parse_dump_manifests_args(
     })
 }
 
-fn parse_telegram_args(args: &[String], output_format: CliOutputFormat) -> Result<CliAction, String> {
+fn parse_telegram_args(
+    args: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
     let mut token = None;
     let mut allowed_users = Vec::new();
     let mut model = DEFAULT_MODEL.to_string();
@@ -1422,12 +1434,16 @@ fn parse_server_args(args: &[String], output_format: CliOutputFormat) -> Result<
             let value = args
                 .get(index + 1)
                 .ok_or_else(|| String::from("--port requires a number"))?;
-            port = value.parse().map_err(|_| String::from("--port must be a number"))?;
+            port = value
+                .parse()
+                .map_err(|_| String::from("--port must be a number"))?;
             index += 2;
             continue;
         }
         if let Some(value) = arg.strip_prefix("--port=") {
-            port = value.parse().map_err(|_| String::from("--port must be a number"))?;
+            port = value
+                .parse()
+                .map_err(|_| String::from("--port must be a number"))?;
             index += 1;
             continue;
         }
@@ -1698,16 +1714,17 @@ fn run_server(port: u16, output_format: CliOutputFormat) -> Result<(), Box<dyn s
 
     match output_format {
         CliOutputFormat::Text => println!("Starting Zhubajie API server on port {port}..."),
-        CliOutputFormat::Json => println!("{}", serde_json::json!({
-            "type": "server_start",
-            "port": port
-        })),
+        CliOutputFormat::Json => println!(
+            "{}",
+            serde_json::json!({
+                "type": "server_start",
+                "port": port
+            })
+        ),
     }
 
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async {
-        runtime::api_server::start_server(registry, port).await
-    })?;
+    rt.block_on(async { runtime::api_server::start_server(registry, port).await })?;
 
     Ok(())
 }
@@ -1752,15 +1769,19 @@ impl MessageHandler for ClawMessageHandler {
             &session_id,
             self.model.clone(),
             self.system_prompt.clone(),
-            true, // enable tools
+            true,  // enable tools
             false, // don't emit output to stdout/stderr
-            None, // allow all tools
+            None,  // allow all tools
             self.permission_mode,
             None, // no progress reporter for now
             self.runtime_plugin_state.clone(),
-        ).map_err(|e| format!("Failed to build runtime: {}", e))?;
+        )
+        .map_err(|e| format!("Failed to build runtime: {}", e))?;
 
-        let mut runtime = built_runtime.runtime.take().expect("runtime should exist while built runtime is alive");
+        let mut runtime = built_runtime
+            .runtime
+            .take()
+            .expect("runtime should exist while built runtime is alive");
 
         // Run a turn
         let turn_result = runtime.run_turn(text, None);
@@ -1772,7 +1793,11 @@ impl MessageHandler for ClawMessageHandler {
         match turn_result {
             Ok(_turn_summary) => {
                 // Try to find the last assistant message
-                let last_assistant_message = session.messages.iter().rev().find(|m| m.role == MessageRole::Assistant);
+                let last_assistant_message = session
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|m| m.role == MessageRole::Assistant);
 
                 let mut response = String::new();
 
@@ -1806,11 +1831,14 @@ async fn run_telegram(
 
     match output_format {
         CliOutputFormat::Text => println!("Starting Telegram bot..."),
-        CliOutputFormat::Json => println!("{}", serde_json::json!({
-            "type": "telegram_start",
-            "allowed_users": allowed_users,
-            "model": model
-        })),
+        CliOutputFormat::Json => println!(
+            "{}",
+            serde_json::json!({
+                "type": "telegram_start",
+                "allowed_users": allowed_users,
+                "model": model
+            })
+        ),
     }
 
     config.allowed_users = allowed_users;
@@ -1824,12 +1852,8 @@ async fn run_telegram(
     let runtime_plugin_state = build_runtime_plugin_state()?;
 
     // Create our handler
-    let handler = ClawMessageHandler::new(
-        model,
-        permission_mode,
-        system_prompt,
-        runtime_plugin_state,
-    );
+    let handler =
+        ClawMessageHandler::new(model, permission_mode, system_prompt, runtime_plugin_state);
 
     // Create and start the runtime
     let runtime = TelegramRuntime::new(config, handler);
@@ -9010,7 +9034,10 @@ fn print_help_to(out: &mut impl Write) -> io::Result<()> {
         out,
         "      Warning: do not `{DEPRECATED_INSTALL_COMMAND}` (deprecated stub)"
     )?;
-    writeln!(out, "  claw telegram --token BOT_TOKEN [--allowed-users USER_IDS]")?;
+    writeln!(
+        out,
+        "  claw telegram --token BOT_TOKEN [--allowed-users USER_IDS]"
+    )?;
     writeln!(out, "      Run a Telegram bot for interacting with claw")?;
     writeln!(out, "      (Environment variable: TELEGRAM_BOT_TOKEN)")?;
     writeln!(out, "  claw dump-manifests [--manifests-dir PATH]")?;
@@ -9213,6 +9240,7 @@ mod tests {
             request_id: Some("req_jobdori_789".to_string()),
             body: String::new(),
             retryable: true,
+            suggested_action: None,
         };
 
         let rendered = format_user_visible_api_error("session-issue-22", &error);
@@ -9235,6 +9263,7 @@ mod tests {
                 request_id: Some("req_jobdori_790".to_string()),
                 body: String::new(),
                 retryable: true,
+                suggested_action: None,
             }),
         };
 
@@ -9298,6 +9327,7 @@ mod tests {
             request_id: Some("req_ctx_456".to_string()),
             body: String::new(),
             retryable: false,
+            suggested_action: None,
         };
 
         let rendered = format_user_visible_api_error("session-issue-32", &error);
@@ -9329,6 +9359,7 @@ mod tests {
                 request_id: Some("req_ctx_retry_789".to_string()),
                 body: String::new(),
                 retryable: false,
+                suggested_action: None,
             }),
         };
 
@@ -9458,7 +9489,7 @@ mod tests {
             CliAction::Repl {
                 model: DEFAULT_MODEL.to_string(),
                 allowed_tools: None,
-                permission_mode: PermissionMode::DangerFullAccess,
+                permission_mode: PermissionMode::WorkspaceWrite,
                 base_commit: None,
                 reasoning_effort: None,
                 allow_broad_cwd: false,
@@ -9591,7 +9622,7 @@ mod tests {
                 model: DEFAULT_MODEL.to_string(),
                 output_format: CliOutputFormat::Text,
                 allowed_tools: None,
-                permission_mode: PermissionMode::DangerFullAccess,
+                permission_mode: PermissionMode::WorkspaceWrite,
                 compact: false,
                 base_commit: None,
                 reasoning_effort: None,
@@ -9682,7 +9713,7 @@ mod tests {
                 model: "claude-opus".to_string(),
                 output_format: CliOutputFormat::Json,
                 allowed_tools: None,
-                permission_mode: PermissionMode::DangerFullAccess,
+                permission_mode: PermissionMode::WorkspaceWrite,
                 compact: false,
                 base_commit: None,
                 reasoning_effort: None,
@@ -9713,7 +9744,7 @@ mod tests {
                 model: DEFAULT_MODEL.to_string(),
                 output_format: CliOutputFormat::Text,
                 allowed_tools: None,
-                permission_mode: PermissionMode::DangerFullAccess,
+                permission_mode: PermissionMode::WorkspaceWrite,
                 compact: true,
                 base_commit: None,
                 reasoning_effort: None,
@@ -9756,7 +9787,7 @@ mod tests {
                 model: "claude-opus-4-6".to_string(),
                 output_format: CliOutputFormat::Text,
                 allowed_tools: None,
-                permission_mode: PermissionMode::DangerFullAccess,
+                permission_mode: PermissionMode::WorkspaceWrite,
                 compact: false,
                 base_commit: None,
                 reasoning_effort: None,
@@ -9914,7 +9945,7 @@ mod tests {
                         .map(str::to_string)
                         .collect()
                 ),
-                permission_mode: PermissionMode::DangerFullAccess,
+                permission_mode: PermissionMode::WorkspaceWrite,
                 base_commit: None,
                 reasoning_effort: None,
                 allow_broad_cwd: false,
@@ -10131,7 +10162,7 @@ mod tests {
             parse_args(&["status".to_string()]).expect("status should parse"),
             CliAction::Status {
                 model: DEFAULT_MODEL.to_string(),
-                permission_mode: PermissionMode::DangerFullAccess,
+                permission_mode: PermissionMode::WorkspaceWrite,
                 output_format: CliOutputFormat::Text,
             }
         );
@@ -12173,6 +12204,8 @@ UU conflicted.rs",
         fs::create_dir_all(&workspace).expect("workspace");
         let script_path = workspace.join("fixture-mcp.py");
         write_mcp_server_fixture(&script_path);
+        let script_path_json =
+            serde_json::to_string(script_path.to_string_lossy().as_ref()).expect("json string");
         fs::write(
             config_home.join("settings.json"),
             format!(
@@ -12180,7 +12213,7 @@ UU conflicted.rs",
                   "mcpServers": {{
                     "alpha": {{
                       "command": "python3",
-                      "args": ["{}"]
+                      "args": [{}]
                     }},
                     "broken": {{
                       "command": "python3",
@@ -12188,7 +12221,7 @@ UU conflicted.rs",
                     }}
                   }}
                 }}"#,
-                script_path.to_string_lossy()
+                script_path_json
             ),
         )
         .expect("write mcp settings");

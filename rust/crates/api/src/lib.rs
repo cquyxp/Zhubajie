@@ -1,10 +1,13 @@
 mod client;
 mod error;
 mod http_client;
+mod model_config;
 mod prompt_cache;
 mod providers;
 mod sse;
 mod types;
+
+pub use model_config::{DynamicProviderRegistry, ModelConfig, ModelProviderConfig, ModelRoutingConfig};
 
 pub use client::{
     oauth_token_is_expired, read_base_url, read_xai_base_url, resolve_saved_oauth_token,

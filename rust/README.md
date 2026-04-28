@@ -211,7 +211,7 @@ rust/
 - **9 crates** in workspace
 - **Binary name:** `claw`
 - **Default model:** `claude-opus-4-6`
-- **Default permissions:** `danger-full-access`
+- **Default permissions:** `workspace-write`
 
 ## License
 

@@ -4,25 +4,24 @@
 //! MCP plumbing, tool-facing file operations, and the core conversation loop
 //! that drives interactive and one-shot turns.
 
-mod bash;
 pub mod api_server;
+mod bash;
 pub mod bash_validation;
 mod bootstrap;
 pub mod branch_lock;
-pub mod error_guide;
-pub mod lane_store;
-pub mod onboarding;
-pub mod retry;
 mod compact;
 mod config;
 pub mod config_validate;
 mod conversation;
+pub mod error_guide;
+pub mod model_config;
 mod file_ops;
 mod git_context;
 pub mod green_contract;
 mod hooks;
 mod json;
 mod lane_events;
+pub mod lane_store;
 pub mod lsp_client;
 mod mcp;
 mod mcp_client;
@@ -31,6 +30,7 @@ pub mod mcp_server;
 mod mcp_stdio;
 pub mod mcp_tool_bridge;
 mod oauth;
+pub mod onboarding;
 pub mod permission_enforcer;
 mod permissions;
 pub mod plugin_lifecycle;
@@ -38,13 +38,13 @@ mod policy_engine;
 mod prompt;
 pub mod recovery_recipes;
 mod remote;
+pub mod retry;
 pub mod sandbox;
 mod session;
 pub mod session_control;
 pub use session_control::SessionStore;
 pub mod bridge;
 pub mod cron_scheduler;
-pub mod telegram;
 mod sse;
 pub mod stale_base;
 pub mod stale_branch;
@@ -52,10 +52,15 @@ pub mod summary_compression;
 pub mod task_packet;
 pub mod task_registry;
 pub mod team_cron_registry;
+pub mod telegram;
 mod trust_resolver;
 mod usage;
 pub mod worker_boot;
 
+pub use api_server::{
+    create_router, start_server, ApiResponse, ApiServerState, CreateWorkerRequest,
+    ObserveScreenRequest, SendPromptRequest,
+};
 pub use bash::{execute_bash, BashCommandInput, BashCommandOutput};
 pub use bootstrap::{BootstrapPhase, BootstrapPlan};
 pub use branch_lock::{detect_branch_lock_collisions, BranchLockCollision, BranchLockIntent};
@@ -99,10 +104,12 @@ pub use conversation::{
     ConversationRuntime, MessageResponse, PromptCacheEvent, RuntimeError, StaticToolExecutor,
     ToolError, ToolExecutor, TurnSummary,
 };
+pub use error_guide::{ErrorGuide, GuidedError, QuickstartGuide};
 pub use file_ops::{
-    edit_file, glob_search, grep_search, read_file, write_file, EditFileOutput, GlobSearchOutput,
-    GrepSearchInput, GrepSearchOutput, ReadFileOutput, StructuredPatchHunk, TextFilePayload,
-    WriteFileOutput,
+    edit_file, edit_file_in_workspace, glob_search, glob_search_in_workspace, grep_search,
+    grep_search_in_workspace, read_file, read_file_in_workspace, write_file,
+    write_file_in_workspace, EditFileOutput, GlobSearchOutput, GrepSearchInput, GrepSearchOutput,
+    ReadFileOutput, StructuredPatchHunk, TextFilePayload, WriteFileOutput,
 };
 pub use git_context::{GitCommitEntry, GitContext};
 pub use hooks::{
@@ -114,6 +121,7 @@ pub use lane_events::{
     LaneEventBuilder, LaneEventMetadata, LaneEventName, LaneEventStatus, LaneFailureClass,
     LaneOwnership, SessionIdentity, WatcherAction,
 };
+pub use lane_store::{LaneState, LaneStore, LaneStoreError};
 pub use mcp::{
     mcp_server_signature, mcp_tool_name, mcp_tool_prefix, normalize_name_for_mcp,
     scoped_mcp_config_hash, unwrap_ccr_proxy_url,
@@ -143,6 +151,7 @@ pub use oauth::{
     OAuthCallbackParams, OAuthRefreshRequest, OAuthTokenExchangeRequest, OAuthTokenSet,
     PkceChallengeMethod, PkceCodePair,
 };
+pub use onboarding::{OnboardingGuide, OnboardingState, PromptTemplates};
 pub use permissions::{
     PermissionContext, PermissionMode, PermissionOutcome, PermissionOverride, PermissionPolicy,
     PermissionPromptDecision, PermissionPrompter, PermissionRequest,
@@ -168,6 +177,9 @@ pub use remote::{
     RemoteSessionContext, UpstreamProxyBootstrap, UpstreamProxyState, DEFAULT_REMOTE_BASE_URL,
     DEFAULT_SESSION_TOKEN_PATH, DEFAULT_SYSTEM_CA_BUNDLE, NO_PROXY_HOSTS, UPSTREAM_PROXY_ENV_KEYS,
 };
+pub use retry::{
+    retry_with_policy, ClassifyRetryError, RetryConfig, RetryErrorClass, RetryPolicy, RetryResult,
+};
 pub use sandbox::{
     build_linux_sandbox_command, detect_container_environment, detect_container_environment_from,
     resolve_sandbox_status, resolve_sandbox_status_for_request, ContainerEnvironment,
@@ -188,6 +200,10 @@ pub use stale_branch::{
     StaleBranchPolicy,
 };
 pub use task_packet::{validate_packet, TaskPacket, TaskPacketValidationError, ValidatedPacket};
+pub use telegram::{
+    ChatId, ChatSessionStore, EchoHandler, MessageHandler, MessageId, TelegramConfig,
+    TelegramError, TelegramResult, TelegramRuntime, User, WebhookConfig,
+};
 pub use trust_resolver::{
     detect_trust_prompt, path_matches_trusted_root, TrustConfig, TrustDecision, TrustEvent,
     TrustPolicy, TrustResolver,
@@ -198,20 +214,6 @@ pub use usage::{
 pub use worker_boot::{
     Worker, WorkerEvent, WorkerEventKind, WorkerEventPayload, WorkerFailure, WorkerFailureKind,
     WorkerPromptTarget, WorkerReadySnapshot, WorkerRegistry, WorkerStatus, WorkerTrustResolution,
-};
-pub use api_server::{
-    create_router, start_server, ApiResponse, ApiServerState, CreateWorkerRequest,
-    ObserveScreenRequest, SendPromptRequest,
-};
-pub use lane_store::{LaneState, LaneStore, LaneStoreError};
-pub use retry::{
-    retry_with_policy, ClassifyRetryError, RetryConfig, RetryErrorClass, RetryPolicy, RetryResult,
-};
-pub use error_guide::{ErrorGuide, GuidedError, QuickstartGuide};
-pub use onboarding::{OnboardingGuide, OnboardingState, PromptTemplates};
-pub use telegram::{
-    ChatSessionStore, ChatId, EchoHandler, MessageHandler, MessageId, TelegramConfig, TelegramError,
-    TelegramResult, TelegramRuntime, User, WebhookConfig,
 };
 
 #[cfg(test)]

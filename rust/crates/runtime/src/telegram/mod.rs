@@ -63,18 +63,16 @@ impl<H: MessageHandler + 'static> TelegramRuntime<H> {
             me.first_name
         );
 
-        let handler = Update::filter_message().endpoint(
-            move |bot: Bot, msg: Message| {
-                let adapter = adapter.clone();
-                let session_store = session_store.clone();
-                async move {
-                    if let Err(e) = adapter.handle_message(bot, msg, session_store).await {
-                        eprintln!("Error handling telegram message: {}", e);
-                    }
-                    respond(())
+        let handler = Update::filter_message().endpoint(move |bot: Bot, msg: Message| {
+            let adapter = adapter.clone();
+            let session_store = session_store.clone();
+            async move {
+                if let Err(e) = adapter.handle_message(bot, msg, session_store).await {
+                    eprintln!("Error handling telegram message: {}", e);
                 }
-            },
-        );
+                respond(())
+            }
+        });
 
         let mut dispatcher = Dispatcher::builder(bot, handler)
             .enable_ctrlc_handler()
@@ -97,9 +95,6 @@ impl<H: MessageHandler + 'static> TelegramRuntime<H> {
 // Convenient default implementation using EchoHandler
 impl Default for TelegramRuntime<EchoHandler> {
     fn default() -> Self {
-        Self::new(
-            TelegramConfig::new("".to_string()),
-            EchoHandler,
-        )
+        Self::new(TelegramConfig::new("".to_string()), EchoHandler)
     }
 }

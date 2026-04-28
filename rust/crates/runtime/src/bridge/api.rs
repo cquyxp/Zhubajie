@@ -133,8 +133,14 @@ impl std::fmt::Debug for BridgeHttpClient {
             .field("client", &self.client)
             .field("runner_version", &self.runner_version)
             .field("get_access_token", &"<callback>")
-            .field("on_auth_401", &self.on_auth_401.as_ref().map(|_| "<callback>"))
-            .field("get_trusted_device_token", &self.get_trusted_device_token.as_ref().map(|_| "<callback>"))
+            .field(
+                "on_auth_401",
+                &self.on_auth_401.as_ref().map(|_| "<callback>"),
+            )
+            .field(
+                "get_trusted_device_token",
+                &self.get_trusted_device_token.as_ref().map(|_| "<callback>"),
+            )
             .field("on_debug", &self.on_debug.as_ref().map(|_| "<callback>"))
             .finish()
     }

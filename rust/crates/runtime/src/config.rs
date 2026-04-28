@@ -65,6 +65,7 @@ pub struct RuntimeFeatureConfig {
     sandbox: SandboxConfig,
     provider_fallbacks: ProviderFallbackConfig,
     trusted_roots: Vec<String>,
+    model_config: crate::model_config::ModelConfig,
 }
 
 /// Ordered chain of fallback model identifiers used when the primary
@@ -315,6 +316,7 @@ impl ConfigLoader {
             sandbox: parse_optional_sandbox_config(&merged_value)?,
             provider_fallbacks: parse_optional_provider_fallbacks(&merged_value)?,
             trusted_roots: parse_optional_trusted_roots(&merged_value)?,
+            model_config: parse_optional_model_config(&merged_value)?,
         };
 
         Ok(RuntimeConfig {
@@ -738,6 +740,48 @@ fn parse_optional_model(root: &JsonValue) -> Option<String> {
         .and_then(|object| object.get("model"))
         .and_then(JsonValue::as_str)
         .map(ToOwned::to_owned)
+}
+
+fn parse_optional_model_config(root: &JsonValue) -> Result<crate::model_config::ModelConfig, ConfigError> {
+    let Some(object) = root.as_object() else {
+        return Ok(crate::model_config::ModelConfig::default());
+    };
+    let Some(models_value) = object.get("models") else {
+        return Ok(crate::model_config::ModelConfig::default());
+    };
+    let models_obj = expect_object(models_value, "merged settings.models")?;
+
+    let aliases = optional_string_map(models_obj, "aliases", "merged settings.models")?
+        .unwrap_or_default();
+
+    let mut providers = std::collections::BTreeMap::new();
+    if let Some(providers_value) = models_obj.get("providers") {
+        let prov_obj = expect_object(providers_value, "merged settings.models.providers")?;
+        for (id, val) in prov_obj {
+            let prov = expect_object(val, &format!("merged settings.models.providers.{}", id))?;
+            providers.insert(id.clone(), crate::model_config::ModelProviderConfig {
+                kind: expect_string(prov, "kind", &format!("models.providers.{}.kind", id))?.to_string(),
+                base_url: expect_string(prov, "baseUrl", &format!("models.providers.{}.baseUrl", id))?.to_string(),
+                auth_env: optional_string(prov, "authEnv", "")?.map(str::to_string),
+                default_model: optional_string(prov, "defaultModel", "")?.map(str::to_string),
+            });
+        }
+    }
+
+    let mut routing = crate::model_config::ModelRoutingConfig::default();
+    if let Some(routing_value) = models_obj.get("routing") {
+        let route_obj = expect_object(routing_value, "merged settings.models.routing")?;
+        if let Some(prefix_value) = route_obj.get("prefix") {
+            let prefix_obj = expect_object(prefix_value, "merged settings.models.routing.prefix")?;
+            routing.prefix = optional_string_map(prefix_obj, "routing.prefix", "")?.unwrap_or_default();
+        }
+        if let Some(exact_value) = route_obj.get("exact") {
+            let exact_obj = expect_object(exact_value, "merged settings.models.routing.exact")?;
+            routing.exact = optional_string_map(exact_obj, "routing.exact", "")?.unwrap_or_default();
+        }
+    }
+
+    Ok(crate::model_config::ModelConfig { aliases, providers, routing })
 }
 
 fn parse_optional_aliases(root: &JsonValue) -> Result<BTreeMap<String, String>, ConfigError> {

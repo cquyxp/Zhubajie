@@ -4,7 +4,9 @@ use std::fmt;
 use std::sync::Arc;
 
 use teloxide::prelude::*;
-use teloxide::types::{Chat as TeloxideChat, Message as TeloxideMessage, ParseMode, User as TeloxideUser};
+use teloxide::types::{
+    Chat as TeloxideChat, Message as TeloxideMessage, ParseMode, User as TeloxideUser,
+};
 use tokio::sync::RwLock;
 
 use crate::session::Session;
@@ -141,7 +143,9 @@ impl<H: MessageHandler + 'static> TelegramAdapter<H> {
         }
 
         // Show typing indicator
-        let _ = bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing).await;
+        let _ = bot
+            .send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing)
+            .await;
 
         // Process the message
         self.process_text_message(bot, msg, text, session_store)
@@ -224,7 +228,10 @@ impl<H: MessageHandler + 'static> TelegramAdapter<H> {
                 session_store.remove_session(chat_id);
                 "Conversation history cleared!".to_string()
             }
-            _ => format!("Unknown command: {}\nType /help for available commands.", text),
+            _ => format!(
+                "Unknown command: {}\nType /help for available commands.",
+                text
+            ),
         };
 
         self.send_message(&bot, chat_id, &response).await?;
@@ -260,8 +267,7 @@ impl<H: MessageHandler + 'static> TelegramAdapter<H> {
     fn is_authorized(&self, user: &TeloxideUser, chat: &TeloxideChat) -> bool {
         // Check if it's a private chat
         if chat.is_private() {
-            self.config.allowed_users.is_empty()
-                || self.config.allowed_users.contains(&user.id.0)
+            self.config.allowed_users.is_empty() || self.config.allowed_users.contains(&user.id.0)
         } else if chat.is_group() || chat.is_supergroup() {
             self.config.is_group_allowed(chat.id.0)
         } else {

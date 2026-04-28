@@ -87,6 +87,9 @@ Supported permission modes:
 - `workspace-write`
 - `danger-full-access`
 
+The default mode is `workspace-write`; use `--dangerously-skip-permissions` or
+`--permission-mode danger-full-access` only when unrestricted access is needed.
+
 Model aliases currently supported by the CLI:
 
 - `opus` → `claude-opus-4-6`

@@ -69,20 +69,12 @@ impl TelegramConfig {
 
         let allowed_users = std::env::var("TELEGRAM_ALLOWED_USERS")
             .ok()
-            .map(|s| {
-                s.split(',')
-                    .filter_map(|s| s.trim().parse().ok())
-                    .collect()
-            })
+            .map(|s| s.split(',').filter_map(|s| s.trim().parse().ok()).collect())
             .unwrap_or_default();
 
         let allowed_groups = std::env::var("TELEGRAM_ALLOWED_GROUPS")
             .ok()
-            .map(|s| {
-                s.split(',')
-                    .filter_map(|s| s.trim().parse().ok())
-                    .collect()
-            })
+            .map(|s| s.split(',').filter_map(|s| s.trim().parse().ok()).collect())
             .unwrap_or_default();
 
         let require_mention = std::env::var("TELEGRAM_REQUIRE_MENTION")

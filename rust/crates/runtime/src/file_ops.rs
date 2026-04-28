@@ -1,7 +1,8 @@
 use std::cmp::Reverse;
+use std::ffi::OsString;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::Instant;
 
 use glob::Pattern;
@@ -553,13 +554,23 @@ fn normalize_path_allow_missing(path: &str) -> io::Result<PathBuf> {
         return Ok(canonical);
     }
 
-    if let Some(parent) = candidate.parent() {
-        let canonical_parent = parent
-            .canonicalize()
-            .unwrap_or_else(|_| parent.to_path_buf());
-        if let Some(name) = candidate.file_name() {
-            return Ok(canonical_parent.join(name));
+    let mut missing_components: Vec<OsString> = Vec::new();
+    let mut existing_ancestor = candidate.as_path();
+    while !existing_ancestor.exists() {
+        let Some(parent) = existing_ancestor.parent() else {
+            break;
+        };
+        if let Some(name) = existing_ancestor.file_name() {
+            missing_components.push(name.to_os_string());
         }
+        existing_ancestor = parent;
+    }
+
+    if let Ok(mut resolved) = existing_ancestor.canonicalize() {
+        for component in missing_components.iter().rev() {
+            resolved.push(component);
+        }
+        return Ok(resolved);
     }
 
     Ok(candidate)
@@ -581,8 +592,56 @@ pub fn read_file_in_workspace(
     read_file(path, offset, limit)
 }
 
+/// Expand a glob pattern with workspace boundary enforcement.
+pub fn glob_search_in_workspace(
+    pattern: &str,
+    path: Option<&str>,
+    workspace_root: &Path,
+) -> io::Result<GlobSearchOutput> {
+    let canonical_root = workspace_root
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_root.to_path_buf());
+
+    reject_parent_dir_components(Path::new(pattern))?;
+
+    if let Some(path) = path {
+        let absolute_path = normalize_path(path)?;
+        validate_workspace_boundary(&absolute_path, &canonical_root)?;
+    } else if Path::new(pattern).is_absolute() {
+        validate_workspace_boundary(Path::new(pattern), &canonical_root)?;
+    }
+
+    glob_search(pattern, path)
+}
+
+/// Runs a regex search with workspace boundary enforcement.
+pub fn grep_search_in_workspace(
+    input: &GrepSearchInput,
+    workspace_root: &Path,
+) -> io::Result<GrepSearchOutput> {
+    let canonical_root = workspace_root
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_root.to_path_buf());
+    let base_path = input.path.as_deref().unwrap_or(".");
+    let absolute_path = normalize_path(base_path)?;
+    validate_workspace_boundary(&absolute_path, &canonical_root)?;
+    grep_search(input)
+}
+
+fn reject_parent_dir_components(path: &Path) -> io::Result<()> {
+    if path
+        .components()
+        .any(|component| component == Component::ParentDir)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("path pattern {} escapes workspace boundary", path.display()),
+        ));
+    }
+    Ok(())
+}
+
 /// Write a file with workspace boundary enforcement.
-#[allow(dead_code)]
 pub fn write_file_in_workspace(
     path: &str,
     content: &str,
@@ -597,7 +656,6 @@ pub fn write_file_in_workspace(
 }
 
 /// Edit a file with workspace boundary enforcement.
-#[allow(dead_code)]
 pub fn edit_file_in_workspace(
     path: &str,
     old_string: &str,
@@ -654,8 +712,10 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        edit_file, expand_braces, glob_search, grep_search, is_symlink_escape, read_file,
-        read_file_in_workspace, write_file, GrepSearchInput, MAX_WRITE_SIZE,
+        edit_file, edit_file_in_workspace, expand_braces, glob_search, glob_search_in_workspace,
+        grep_search, grep_search_in_workspace, is_symlink_escape, read_file,
+        read_file_in_workspace, write_file, write_file_in_workspace, GrepSearchInput,
+        MAX_WRITE_SIZE,
     };
 
     fn temp_path(name: &str) -> std::path::PathBuf {
@@ -733,6 +793,79 @@ mod tests {
         let error = result.unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
         assert!(error.to_string().contains("escapes workspace"));
+    }
+
+    #[test]
+    fn write_and_edit_enforce_workspace_boundary() {
+        let workspace = temp_path("write-edit-boundary");
+        let outside = temp_path("write-edit-outside");
+        std::fs::create_dir_all(&workspace).expect("workspace dir should be created");
+        std::fs::create_dir_all(&outside).expect("outside dir should be created");
+
+        let inside = workspace.join("inside.txt");
+        write_file_in_workspace(inside.to_string_lossy().as_ref(), "alpha", &workspace)
+            .expect("inside write should succeed");
+        edit_file_in_workspace(
+            inside.to_string_lossy().as_ref(),
+            "alpha",
+            "beta",
+            false,
+            &workspace,
+        )
+        .expect("inside edit should succeed");
+
+        let outside_file = outside.join("outside.txt");
+        let write_result =
+            write_file_in_workspace(outside_file.to_string_lossy().as_ref(), "nope", &workspace);
+        assert_eq!(
+            write_result.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+    }
+
+    #[test]
+    fn search_tools_enforce_workspace_boundary() {
+        let workspace = temp_path("search-boundary");
+        let outside = temp_path("search-outside");
+        std::fs::create_dir_all(&workspace).expect("workspace dir should be created");
+        std::fs::create_dir_all(&outside).expect("outside dir should be created");
+
+        let glob_result =
+            glob_search_in_workspace("*.rs", Some(outside.to_string_lossy().as_ref()), &workspace);
+        assert_eq!(
+            glob_result.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+
+        let grep_result = grep_search_in_workspace(
+            &GrepSearchInput {
+                pattern: "secret".to_string(),
+                path: Some(outside.to_string_lossy().into_owned()),
+                glob: None,
+                output_mode: None,
+                before: None,
+                after: None,
+                context_short: None,
+                context: None,
+                line_numbers: None,
+                case_insensitive: None,
+                file_type: None,
+                head_limit: None,
+                offset: None,
+                multiline: None,
+            },
+            &workspace,
+        );
+        assert_eq!(
+            grep_result.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+
+        let parent_pattern = glob_search_in_workspace("../*.rs", None, &workspace);
+        assert_eq!(
+            parent_pattern.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
     }
 
     #[test]

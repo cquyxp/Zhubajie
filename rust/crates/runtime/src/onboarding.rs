@@ -1,7 +1,7 @@
 #![allow(dead_code)]
-use std::path::{Path, PathBuf};
-use std::fs;
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::{Path, PathBuf};
 
 /// 入门向导状态
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,12 +102,7 @@ impl OnboardingGuide {
 
     /// 获取建议的下一步
     pub fn suggested_next_step(&self) -> &'static str {
-        let steps = [
-            "doctor",
-            "hello",
-            "explore",
-            "commit",
-        ];
+        let steps = ["doctor", "hello", "explore", "commit"];
 
         for step in steps {
             if !self.state.completed_steps.contains(&step.to_string()) {
@@ -229,7 +224,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut guide = OnboardingGuide::from_workspace(dir.path()).unwrap();
         guide.mark_step_completed("doctor");
-        assert!(guide.state().completed_steps.contains(&"doctor".to_string()));
+        assert!(guide
+            .state()
+            .completed_steps
+            .contains(&"doctor".to_string()));
     }
 
     #[test]

@@ -177,7 +177,11 @@ impl LaneStore {
     }
 
     /// Add an event to a lane and persist.
-    pub fn add_event_to_lane(&self, lane_id: &str, event: LaneEvent) -> Result<LaneState, LaneStoreError> {
+    pub fn add_event_to_lane(
+        &self,
+        lane_id: &str,
+        event: LaneEvent,
+    ) -> Result<LaneState, LaneStoreError> {
         let mut lane = if self.lane_exists(lane_id) {
             self.load_lane(lane_id)?
         } else {
@@ -232,7 +236,10 @@ mod tests {
 
         let lane = store.add_event_to_lane("test-lane-2", event.clone())?;
         assert_eq!(lane.events.len(), 1);
-        assert_eq!(lane.last_event.as_ref().unwrap().event, LaneEventName::Started);
+        assert_eq!(
+            lane.last_event.as_ref().unwrap().event,
+            LaneEventName::Started
+        );
 
         let loaded = store.load_lane("test-lane-2")?;
         assert_eq!(loaded.events.len(), 1);
