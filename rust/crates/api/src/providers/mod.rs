@@ -278,10 +278,18 @@ pub fn model_token_limit(model: &str) -> Option<ModelTokenLimit> {
     }
 }
 
+/// Default context window (128K) used as a fallback for models whose
+/// limits are not registered in [`model_token_limit`]. Covers GPT-4o,
+/// GPT-4.1, Grok, Qwen, and most open-weight models.
+const DEFAULT_CONTEXT_WINDOW_TOKENS: u32 = 131_072;
+/// Default max output tokens used for the same fallback path.
+const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 64_000;
+
 pub fn preflight_message_request(request: &MessageRequest) -> Result<(), ApiError> {
-    let Some(limit) = model_token_limit(&request.model) else {
-        return Ok(());
-    };
+    let limit = model_token_limit(&request.model).unwrap_or(ModelTokenLimit {
+        max_output_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
+        context_window_tokens: DEFAULT_CONTEXT_WINDOW_TOKENS,
+    });
 
     let estimated_input_tokens = estimate_message_request_input_tokens(request);
     let estimated_total_tokens = estimated_input_tokens.saturating_add(request.max_tokens);
@@ -708,8 +716,9 @@ mod tests {
     }
 
     #[test]
-    fn preflight_skips_unknown_models() {
-        let request = MessageRequest {
+    fn preflight_uses_default_limit_for_unknown_models() {
+        // Large request exceeding 128K default should be blocked
+        let large = MessageRequest {
             model: "unknown-model".to_string(),
             max_tokens: 64_000,
             messages: vec![InputMessage {
@@ -724,9 +733,28 @@ mod tests {
             stream: false,
             ..Default::default()
         };
+        let err = preflight_message_request(&large)
+            .expect_err("unknown models should use the 128K default context window");
+        assert!(matches!(err, ApiError::ContextWindowExceeded { .. }));
 
-        preflight_message_request(&request)
-            .expect("models without context metadata should skip the guarded preflight");
+        // Small request within default limits should pass
+        let small = MessageRequest {
+            model: "another-unknown".to_string(),
+            max_tokens: 4_000,
+            messages: vec![InputMessage {
+                role: "user".to_string(),
+                content: vec![InputContentBlock::Text {
+                    text: "hello".to_string(),
+                }],
+            }],
+            system: None,
+            tools: None,
+            tool_choice: None,
+            stream: false,
+            ..Default::default()
+        };
+        preflight_message_request(&small)
+            .expect("small requests should pass the default preflight check");
     }
 
     #[test]

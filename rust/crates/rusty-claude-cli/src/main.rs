@@ -34,7 +34,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use api::{
-    convert_messages, detect_provider_kind, model_token_limit,
+    convert_messages, detect_provider_kind, max_tokens_for_model, model_token_limit,
     prompt_cache_record_to_runtime_event, push_prompt_cache_record, resolve_startup_auth_source,
     AnthropicClient, AuthSource, ContentBlockDelta, InputContentBlock, InputMessage,
     MessageRequest, MessageResponse, OutputContentBlock, PromptCache,
@@ -83,13 +83,6 @@ use doctor::*;
 pub use args::*;
 
 const DEFAULT_MODEL: &str = "claude-opus-4-6";
-fn max_tokens_for_model(model: &str) -> u32 {
-    if model.contains("opus") {
-        32_000
-    } else {
-        64_000
-    }
-}
 // Build-time constants injected by build.rs (fall back to static values when
 // build.rs hasn't run, e.g. in doc-test or unusual toolchain environments).
 const DEFAULT_DATE: &str = match option_env!("BUILD_DATE") {
@@ -256,7 +249,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             cwd,
             date,
             output_format,
-        } => print_system_prompt(cwd, date, output_format)?,
+        } => print_system_prompt(cwd, date, output_format, DEFAULT_MODEL)?,
         CliAction::Version { output_format } => print_version(output_format)?,
         CliAction::ResumeSession {
             session_path,
@@ -462,8 +455,17 @@ fn print_system_prompt(
     cwd: PathBuf,
     date: String,
     output_format: CliOutputFormat,
+    model: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let sections = load_system_prompt(cwd, date, env::consts::OS, "unknown")?;
+    let sections: Vec<String> = load_system_prompt(cwd, date, env::consts::OS, "unknown")?
+        .into_iter()
+        .map(|section| {
+            section.replace(
+                &format!("Model family: {}", FRONTIER_MODEL_NAME),
+                &format!("Model family: {model}"),
+            )
+        })
+        .collect();
     let message = sections.join(
         "
 
@@ -2491,7 +2493,7 @@ impl LiveCli {
         // Auto-compact if session exceeds the new model's context window
         if let Some(limit) = model_token_limit(&model) {
             let estimated = estimate_session_tokens(&session);
-            let max_output = api::max_tokens_for_model(&model);
+            let max_output = max_tokens_for_model(&model);
             if estimated.saturating_add(max_output as usize) > limit.context_window_tokens as usize
             {
                 let config = CompactionConfig {
