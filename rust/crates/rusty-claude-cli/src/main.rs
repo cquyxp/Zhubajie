@@ -34,11 +34,12 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use api::{
-    convert_messages, detect_provider_kind, prompt_cache_record_to_runtime_event,
-    push_prompt_cache_record, resolve_startup_auth_source, AnthropicClient, AuthSource,
-    ContentBlockDelta, InputContentBlock, InputMessage, MessageRequest, MessageResponse,
-    OutputContentBlock, PromptCache, ProviderClient as ApiProviderClient, ProviderKind,
-    StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition, ToolResultContentBlock,
+    convert_messages, detect_provider_kind, model_token_limit,
+    prompt_cache_record_to_runtime_event, push_prompt_cache_record, resolve_startup_auth_source,
+    AnthropicClient, AuthSource, ContentBlockDelta, InputContentBlock, InputMessage,
+    MessageRequest, MessageResponse, OutputContentBlock, PromptCache,
+    ProviderClient as ApiProviderClient, ProviderKind, StreamEvent as ApiStreamEvent, ToolChoice,
+    ToolDefinition, ToolResultContentBlock,
 };
 
 use commands::{
@@ -60,14 +61,14 @@ use runtime::bridge::{
     WorkSecret,
 };
 use runtime::{
-    check_base_commit, check_freshness, format_stale_base_warning, format_usd,
-    load_oauth_credentials, load_system_prompt, pricing_for_model, resolve_expected_base,
-    resolve_sandbox_status, ApiClient, ApiRequest, AssistantEvent, BranchFreshness,
-    CompactionConfig, ConfigLoader, ConfigSource, ContentBlock, ConversationMessage,
-    ConversationRuntime, McpServer, McpServerManager, McpServerSpec, McpTool, MessageRole,
-    ModelPricing, PermissionMode, PermissionPolicy, ProjectContext, PromptCacheEvent,
-    ResolvedPermissionMode, RuntimeError, Session, SessionStore, TokenUsage, ToolError,
-    ToolExecutor, TrustConfig, TrustResolver, UsageTracker, WorkerRegistry,
+    check_base_commit, check_freshness, compact_session_legacy, estimate_session_tokens,
+    format_stale_base_warning, format_usd, load_oauth_credentials, load_system_prompt,
+    pricing_for_model, resolve_expected_base, resolve_sandbox_status, ApiClient, ApiRequest,
+    AssistantEvent, BranchFreshness, CompactionConfig, ConfigLoader, ConfigSource, ContentBlock,
+    ConversationMessage, ConversationRuntime, FRONTIER_MODEL_NAME, McpServer, McpServerManager,
+    McpServerSpec, McpTool, MessageRole, ModelPricing, PermissionMode, PermissionPolicy,
+    ProjectContext, PromptCacheEvent, ResolvedPermissionMode, RuntimeError, Session, SessionStore,
+    TokenUsage, ToolError, ToolExecutor, TrustConfig, TrustResolver, UsageTracker, WorkerRegistry,
 };
 
 use runtime::telegram::{ChatId, MessageHandler, TelegramConfig, TelegramRuntime};
@@ -1777,7 +1778,7 @@ impl LiveCli {
         allowed_tools: Option<AllowedToolSet>,
         permission_mode: PermissionMode,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let system_prompt = build_system_prompt()?;
+        let system_prompt = build_system_prompt(&model)?;
         let session_state = new_cli_session()?;
         let session = create_managed_session_handle(&session_state.session_id)?;
         let runtime = build_runtime(
@@ -2484,8 +2485,37 @@ impl LiveCli {
         }
 
         let previous = self.model.clone();
-        let session = self.runtime.session().clone();
+        let mut session = self.runtime.session().clone();
         let message_count = session.messages.len();
+
+        // Auto-compact if session exceeds the new model's context window
+        if let Some(limit) = model_token_limit(&model) {
+            let estimated = estimate_session_tokens(&session);
+            let max_output = api::max_tokens_for_model(&model);
+            if estimated.saturating_add(max_output as usize) > limit.context_window_tokens as usize
+            {
+                let config = CompactionConfig {
+                    preserve_recent_messages: 4,
+                    max_estimated_tokens: 0,
+                };
+                let result = compact_session_legacy(&session, config);
+                if result.removed_message_count > 0 {
+                    eprintln!(
+                        "[auto-compact] 已自动压缩（移除 {} 条历史）以适配 {} 的上下文窗口",
+                        result.removed_message_count, model
+                    );
+                    session = result.compacted_session;
+                }
+            }
+        }
+
+        // Update system prompt model name
+        let old_line = format!("Model family: {}", FRONTIER_MODEL_NAME);
+        let new_line = format!("Model family: {}", model);
+        for section in &mut self.system_prompt {
+            *section = section.replace(&old_line, &new_line);
+        }
+
         let runtime = build_runtime(
             session,
             &self.session.id,
@@ -4546,13 +4576,21 @@ fn short_tool_id(id: &str) -> String {
     format!("{prefix}…")
 }
 
-fn build_system_prompt() -> Result<Vec<String>, Box<dyn std::error::Error>> {
+fn build_system_prompt(model: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     Ok(load_system_prompt(
         env::current_dir()?,
         DEFAULT_DATE,
         env::consts::OS,
         "unknown",
-    )?)
+    )?
+    .into_iter()
+    .map(|section| {
+        section.replace(
+            &format!("Model family: {}", FRONTIER_MODEL_NAME),
+            &format!("Model family: {model}"),
+        )
+    })
+    .collect())
 }
 
 pub(crate) fn build_runtime_plugin_state() -> Result<RuntimePluginState, Box<dyn std::error::Error>> {
