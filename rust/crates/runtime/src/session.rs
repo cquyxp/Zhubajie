@@ -48,6 +48,7 @@ pub enum ContentBlock {
 pub struct ConversationMessage {
     pub role: MessageRole,
     pub blocks: Vec<ContentBlock>,
+    pub reasoning_content: Option<String>,
     pub usage: Option<TokenUsage>,
 }
 
@@ -78,6 +79,20 @@ struct SessionPersistence {
     path: PathBuf,
 }
 
+/// Phase of structured plan mode (ROADMAP #65).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanPhase {
+    Inactive,
+    Planning,
+    Executing,
+}
+
+impl Default for PlanPhase {
+    fn default() -> Self {
+        Self::Inactive
+    }
+}
+
 /// Persisted conversational state for the runtime and CLI session manager.
 ///
 /// `workspace_root` binds the session to the worktree it was created in. The
@@ -102,6 +117,12 @@ pub struct Session {
     /// Timestamp of last successful health check (ROADMAP #38)
     pub last_health_check_ms: Option<u64>,
     pub model: Option<String>,
+    /// Structured plan mode state (ROADMAP #65).
+    pub plan_phase: PlanPhase,
+    /// The plan text extracted during Planning phase.
+    pub plan: Option<String>,
+    /// Session-wide goal text for long-running work.
+    pub goal: Option<String>,
     persistence: Option<SessionPersistence>,
 }
 
@@ -117,6 +138,9 @@ impl PartialEq for Session {
             && self.workspace_root == other.workspace_root
             && self.prompt_history == other.prompt_history
             && self.last_health_check_ms == other.last_health_check_ms
+            && self.plan_phase == other.plan_phase
+            && self.plan == other.plan
+            && self.goal == other.goal
     }
 }
 
@@ -170,6 +194,9 @@ impl Session {
             prompt_history: Vec::new(),
             last_health_check_ms: None,
             model: None,
+            plan_phase: PlanPhase::Inactive,
+            plan: None,
+            goal: None,
             persistence: None,
         }
     }
@@ -274,6 +301,9 @@ impl Session {
             prompt_history: self.prompt_history.clone(),
             last_health_check_ms: self.last_health_check_ms,
             model: self.model.clone(),
+            plan_phase: self.plan_phase,
+            plan: self.plan.clone(),
+            goal: self.goal.clone(),
             persistence: None,
         }
     }
@@ -327,6 +357,25 @@ impl Session {
                         .collect(),
                 ),
             );
+        }
+        if self.plan_phase != PlanPhase::Inactive {
+            object.insert(
+                "plan_phase".to_string(),
+                JsonValue::String(
+                    match self.plan_phase {
+                        PlanPhase::Inactive => "inactive",
+                        PlanPhase::Planning => "planning",
+                        PlanPhase::Executing => "executing",
+                    }
+                    .to_string(),
+                ),
+            );
+        }
+        if let Some(plan) = &self.plan {
+            object.insert("plan".to_string(), JsonValue::String(plan.clone()));
+        }
+        if let Some(goal) = &self.goal {
+            object.insert("goal".to_string(), JsonValue::String(goal.clone()));
         }
         Ok(JsonValue::Object(object))
     }
@@ -386,6 +435,23 @@ impl Session {
             .get("model")
             .and_then(JsonValue::as_str)
             .map(String::from);
+        let plan_phase =
+            object
+                .get("plan_phase")
+                .and_then(JsonValue::as_str)
+                .map_or(PlanPhase::Inactive, |s| match s {
+                    "planning" => PlanPhase::Planning,
+                    "executing" => PlanPhase::Executing,
+                    _ => PlanPhase::Inactive,
+                });
+        let plan = object
+            .get("plan")
+            .and_then(JsonValue::as_str)
+            .map(String::from);
+        let goal = object
+            .get("goal")
+            .and_then(JsonValue::as_str)
+            .map(String::from);
         Ok(Self {
             version,
             session_id,
@@ -398,6 +464,9 @@ impl Session {
             prompt_history,
             last_health_check_ms: None,
             model,
+            plan_phase,
+            plan,
+            goal,
             persistence: None,
         })
     }
@@ -412,6 +481,9 @@ impl Session {
         let mut fork = None;
         let mut workspace_root = None;
         let mut model = None;
+        let mut plan_phase = PlanPhase::Inactive;
+        let mut plan = None;
+        let mut goal = None;
         let mut prompt_history = Vec::new();
 
         for (line_number, raw_line) in contents.lines().enumerate() {
@@ -453,6 +525,22 @@ impl Session {
                         .map(PathBuf::from);
                     model = object
                         .get("model")
+                        .and_then(JsonValue::as_str)
+                        .map(String::from);
+                    plan_phase = object.get("plan_phase").and_then(JsonValue::as_str).map_or(
+                        PlanPhase::Inactive,
+                        |s| match s {
+                            "planning" => PlanPhase::Planning,
+                            "executing" => PlanPhase::Executing,
+                            _ => PlanPhase::Inactive,
+                        },
+                    );
+                    plan = object
+                        .get("plan")
+                        .and_then(JsonValue::as_str)
+                        .map(String::from);
+                    goal = object
+                        .get("goal")
                         .and_then(JsonValue::as_str)
                         .map(String::from);
                 }
@@ -499,6 +587,9 @@ impl Session {
             prompt_history,
             last_health_check_ms: None,
             model,
+            plan_phase,
+            plan,
+            goal,
             persistence: None,
         })
     }
@@ -607,7 +698,55 @@ impl Session {
         if let Some(model) = &self.model {
             object.insert("model".to_string(), JsonValue::String(model.clone()));
         }
+        if self.plan_phase != PlanPhase::Inactive {
+            object.insert(
+                "plan_phase".to_string(),
+                JsonValue::String(
+                    match self.plan_phase {
+                        PlanPhase::Inactive => "inactive",
+                        PlanPhase::Planning => "planning",
+                        PlanPhase::Executing => "executing",
+                    }
+                    .to_string(),
+                ),
+            );
+        }
+        if let Some(plan) = &self.plan {
+            object.insert("plan".to_string(), JsonValue::String(plan.clone()));
+        }
+        if let Some(goal) = &self.goal {
+            object.insert("goal".to_string(), JsonValue::String(goal.clone()));
+        }
         Ok(JsonValue::Object(object))
+    }
+
+    pub fn set_planning_mode(&mut self) {
+        self.plan_phase = PlanPhase::Planning;
+        self.plan = None;
+    }
+
+    pub fn set_executing_mode(&mut self) {
+        self.plan_phase = PlanPhase::Executing;
+    }
+
+    pub fn store_plan(&mut self, plan_text: impl Into<String>) {
+        self.plan = Some(plan_text.into());
+        self.plan_phase = PlanPhase::Executing;
+    }
+
+    pub fn set_goal(&mut self, goal_text: impl Into<String>) {
+        self.touch();
+        self.goal = Some(goal_text.into());
+    }
+
+    pub fn clear_goal(&mut self) {
+        self.touch();
+        self.goal = None;
+    }
+
+    pub fn clear_plan_mode(&mut self) {
+        self.plan_phase = PlanPhase::Inactive;
+        self.plan = None;
     }
 
     fn touch(&mut self) {
@@ -627,6 +766,7 @@ impl ConversationMessage {
         Self {
             role: MessageRole::User,
             blocks: vec![ContentBlock::Text { text: text.into() }],
+            reasoning_content: None,
             usage: None,
         }
     }
@@ -636,6 +776,7 @@ impl ConversationMessage {
         Self {
             role: MessageRole::Assistant,
             blocks,
+            reasoning_content: None,
             usage: None,
         }
     }
@@ -645,6 +786,7 @@ impl ConversationMessage {
         Self {
             role: MessageRole::Assistant,
             blocks,
+            reasoning_content: None,
             usage,
         }
     }
@@ -664,6 +806,7 @@ impl ConversationMessage {
                 output: output.into(),
                 is_error,
             }],
+            reasoning_content: None,
             usage: None,
         }
     }
@@ -689,6 +832,12 @@ impl ConversationMessage {
         );
         if let Some(usage) = self.usage {
             object.insert("usage".to_string(), usage_to_json(usage));
+        }
+        if let Some(reasoning_content) = &self.reasoning_content {
+            object.insert(
+                "reasoning_content".to_string(),
+                JsonValue::String(reasoning_content.clone()),
+            );
         }
         JsonValue::Object(object)
     }
@@ -719,10 +868,15 @@ impl ConversationMessage {
             .iter()
             .map(ContentBlock::from_json)
             .collect::<Result<Vec<_>, _>>()?;
+        let reasoning_content = object
+            .get("reasoning_content")
+            .and_then(JsonValue::as_str)
+            .map(ToOwned::to_owned);
         let usage = object.get("usage").map(usage_from_json).transpose()?;
         Ok(Self {
             role,
             blocks,
+            reasoning_content,
             usage,
         })
     }
@@ -1206,6 +1360,20 @@ mod tests {
             17
         );
         assert_eq!(restored.session_id, session.session_id);
+    }
+
+    #[test]
+    fn persists_and_restores_goal_metadata() {
+        let mut session = Session::new();
+        session.set_goal("ship the release");
+
+        let path = temp_session_path("goal");
+        session.save_to_path(&path).expect("session should save");
+        let restored = Session::load_from_path(&path).expect("session should load");
+        fs::remove_file(&path).expect("temp file should be removable");
+
+        assert_eq!(restored.goal.as_deref(), Some("ship the release"));
+        assert_eq!(restored.plan_phase, Session::new().plan_phase);
     }
 
     #[test]

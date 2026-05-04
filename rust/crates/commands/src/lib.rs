@@ -205,6 +205,20 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         resume_supported: false,
     },
     SlashCommandSpec {
+        name: "plan",
+        aliases: &[],
+        summary: "Structured plan mode — analyze first, then execute",
+        argument_hint: Some("on|off|show"),
+        resume_supported: false,
+    },
+    SlashCommandSpec {
+        name: "goal",
+        aliases: &[],
+        summary: "Set or inspect a long-running goal for the session",
+        argument_hint: Some("[show|set <goal>|clear]"),
+        resume_supported: true,
+    },
+    SlashCommandSpec {
         name: "teleport",
         aliases: &[],
         summary: "Jump to a file or symbol by searching the workspace",
@@ -1049,6 +1063,7 @@ pub enum SlashCommand {
     Status,
     Sandbox,
     Compact,
+    Migrate,
     Bughunter {
         scope: Option<String>,
     },
@@ -1134,6 +1149,9 @@ pub enum SlashCommand {
     Keybindings,
     PrivacySettings,
     Plan {
+        mode: Option<String>,
+    },
+    Goal {
         mode: Option<String>,
     },
     Review {
@@ -1272,6 +1290,7 @@ impl SlashCommand {
             Self::Keybindings => "/keybindings",
             Self::PrivacySettings => "/privacy-settings",
             Self::Plan { .. } => "/plan",
+            Self::Goal { .. } => "/goal",
             Self::Review { .. } => "/review",
             Self::Tasks { .. } => "/tasks",
             Self::Theme { .. } => "/theme",
@@ -1290,6 +1309,7 @@ impl SlashCommand {
             Self::OutputStyle { .. } => "/output-style",
             Self::AddDir { .. } => "/add-dir",
             Self::Sandbox => "/sandbox",
+            Self::Migrate => "/migrate",
             Self::Mcp { .. } => "/mcp",
             Self::Export { .. } => "/export",
             #[allow(unreachable_patterns)]
@@ -1399,6 +1419,11 @@ pub fn validate_slash_command_input(
             validate_no_args(command, &args)?;
             SlashCommand::Doctor
         }
+        "migrate" | "import" => {
+            validate_no_args(command, &args)?;
+            SlashCommand::Migrate
+        }
+        "goal" => SlashCommand::Goal { mode: remainder },
         "remote-control" | "rc" => {
             let mut name = None;
             let mut session_id = None;
@@ -1914,6 +1939,7 @@ fn slash_command_category(name: &str) -> &'static str {
         | "bookmarks" | "context" | "files" | "focus" | "unfocus" | "retry" | "stop" | "undo" => {
             "Session"
         }
+        "goal" => "Session",
         "model" | "permissions" | "config" | "memory" | "theme" | "vim" | "voice" | "color"
         | "effort" | "fast" | "brief" | "output-style" | "keybindings" | "privacy-settings"
         | "stickers" | "language" | "profile" | "max-tokens" | "temperature" | "system-prompt"
@@ -4091,6 +4117,7 @@ pub fn handle_slash_command(
         | SlashCommand::Resume { .. }
         | SlashCommand::Config { .. }
         | SlashCommand::Mcp { .. }
+        | SlashCommand::Migrate
         | SlashCommand::Memory
         | SlashCommand::Init
         | SlashCommand::Diff
@@ -4124,6 +4151,7 @@ pub fn handle_slash_command(
         | SlashCommand::Keybindings
         | SlashCommand::PrivacySettings
         | SlashCommand::Plan { .. }
+        | SlashCommand::Goal { .. }
         | SlashCommand::Review { .. }
         | SlashCommand::Tasks { .. }
         | SlashCommand::Theme { .. }
@@ -4306,6 +4334,12 @@ mod tests {
             SlashCommand::parse("/ultraplan ship both features"),
             Ok(Some(SlashCommand::Ultraplan {
                 task: Some("ship both features".to_string())
+            }))
+        );
+        assert_eq!(
+            SlashCommand::parse("/goal set ship the release"),
+            Ok(Some(SlashCommand::Goal {
+                mode: Some("set ship the release".to_string())
             }))
         );
         assert_eq!(
@@ -4654,6 +4688,7 @@ mod tests {
         assert!(help.contains("/pr [context]"));
         assert!(help.contains("/issue [context]"));
         assert!(help.contains("/ultraplan [task]"));
+        assert!(help.contains("/goal [show|set <goal>|clear]"));
         assert!(help.contains("/teleport <symbol-or-path>"));
         assert!(help.contains("/debug-tool-call"));
         assert!(help.contains("/model [model]"));
@@ -4679,8 +4714,8 @@ mod tests {
         assert!(help.contains("aliases: /skill"));
         assert!(!help.contains("/login"));
         assert!(!help.contains("/logout"));
-        assert_eq!(slash_command_specs().len(), 139);
-        assert!(resume_supported_slash_commands().len() >= 39);
+        assert_eq!(slash_command_specs().len(), 142);
+        assert!(resume_supported_slash_commands().len() >= 40);
     }
 
     #[test]
