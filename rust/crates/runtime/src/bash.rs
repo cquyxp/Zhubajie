@@ -14,6 +14,10 @@ use crate::sandbox::{
 };
 use crate::ConfigLoader;
 
+/// Maximum allowed bash timeout (10 minutes). Values larger than this
+/// are capped to prevent runaway commands from occupying resources.
+pub const MAX_BASH_TIMEOUT_MS: u64 = 600_000;
+
 /// Input schema for the built-in bash execution tool.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BashCommandInput {
@@ -110,6 +114,7 @@ async fn execute_bash_async(
     let mut command = prepare_tokio_command(&input.command, &cwd, &sandbox_status, true);
 
     let output_result = if let Some(timeout_ms) = input.timeout {
+        let timeout_ms = timeout_ms.min(MAX_BASH_TIMEOUT_MS);
         match timeout(Duration::from_millis(timeout_ms), command.output()).await {
             Ok(result) => (result?, false),
             Err(_) => {
@@ -188,6 +193,7 @@ fn prepare_command(
     sandbox_status: &SandboxStatus,
     create_dirs: bool,
 ) -> Command {
+    let (shell, effective_command) = resolve_host_shell(command);
     if create_dirs {
         prepare_sandbox_dirs(cwd);
     }
@@ -200,8 +206,11 @@ fn prepare_command(
         return prepared;
     }
 
-    let mut prepared = Command::new("sh");
-    prepared.arg("-lc").arg(command).current_dir(cwd);
+    let mut prepared = Command::new(shell.program);
+    prepared
+        .args(shell.args)
+        .arg(effective_command)
+        .current_dir(cwd);
     if sandbox_status.filesystem_active {
         prepared.env("HOME", cwd.join(".sandbox-home"));
         prepared.env("TMPDIR", cwd.join(".sandbox-tmp"));
@@ -215,6 +224,7 @@ fn prepare_tokio_command(
     sandbox_status: &SandboxStatus,
     create_dirs: bool,
 ) -> TokioCommand {
+    let (shell, effective_command) = resolve_host_shell(command);
     if create_dirs {
         prepare_sandbox_dirs(cwd);
     }
@@ -227,13 +237,150 @@ fn prepare_tokio_command(
         return prepared;
     }
 
-    let mut prepared = TokioCommand::new("sh");
-    prepared.arg("-lc").arg(command).current_dir(cwd);
+    let mut prepared = TokioCommand::new(shell.program);
+    prepared
+        .args(shell.args)
+        .arg(effective_command)
+        .current_dir(cwd);
     if sandbox_status.filesystem_active {
         prepared.env("HOME", cwd.join(".sandbox-home"));
         prepared.env("TMPDIR", cwd.join(".sandbox-tmp"));
     }
     prepared
+}
+
+struct HostShell {
+    program: &'static str,
+    args: &'static [&'static str],
+}
+
+fn resolve_host_shell(command: &str) -> (HostShell, String) {
+    if cfg!(windows) {
+        // Prefer a bash-compatible shell when it exists so existing tests and
+        // POSIX-style snippets keep working. Fall back to cmd.exe for clearly
+        // cmd-style commands such as `dir /b /s` when that is more likely to
+        // match the user's intent.
+        let bash = HostShell {
+            program: "bash",
+            args: &["-lc"],
+        };
+        let sh = HostShell {
+            program: "sh",
+            args: &["-lc"],
+        };
+        let cmd = HostShell {
+            program: "cmd",
+            args: &["/C"],
+        };
+        if program_exists(bash.program) {
+            return (bash, command.to_string());
+        }
+        if command_looks_cmd_like(command) && program_exists(cmd.program) {
+            return (cmd, command.to_string());
+        }
+        if program_exists(sh.program) {
+            return (sh, command.to_string());
+        }
+        if let Some(translated) = translate_simple_printf(command) {
+            if program_exists(cmd.program) {
+                return (cmd, translated);
+            }
+        }
+        if program_exists(cmd.program) {
+            return (cmd, command.to_string());
+        }
+        if program_exists("pwsh") {
+            return (
+                HostShell {
+                    program: "pwsh",
+                    args: &["-NoProfile", "-NonInteractive", "-Command"],
+                },
+                command.to_string(),
+            );
+        }
+        if program_exists("powershell") {
+            return (
+                HostShell {
+                    program: "powershell",
+                    args: &["-NoProfile", "-NonInteractive", "-Command"],
+                },
+                command.to_string(),
+            );
+        }
+        (
+            HostShell {
+                program: "cmd",
+                args: &["/C"],
+            },
+            command.to_string(),
+        )
+    } else {
+        (
+            HostShell {
+                program: "sh",
+                args: &["-lc"],
+            },
+            command.to_string(),
+        )
+    }
+}
+
+fn translate_simple_printf(command: &str) -> Option<String> {
+    let trimmed = command.trim();
+    let rest = trimmed.strip_prefix("printf ")?;
+    let quoted = rest
+        .strip_prefix('\'')
+        .and_then(|value| value.strip_suffix('\''))
+        .or_else(|| {
+            rest.strip_prefix('"')
+                .and_then(|value| value.strip_suffix('"'))
+        })?;
+    Some(format!("echo {quoted}"))
+}
+
+fn program_exists(program: &str) -> bool {
+    std::process::Command::new(program)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok()
+}
+
+fn command_looks_cmd_like(command: &str) -> bool {
+    let normalized = command.trim_start().to_ascii_lowercase();
+    let base = normalized.split_whitespace().next().unwrap_or("");
+    matches!(
+        base,
+        "assoc"
+            | "attrib"
+            | "cd"
+            | "chdir"
+            | "cls"
+            | "copy"
+            | "del"
+            | "dir"
+            | "echo"
+            | "erase"
+            | "exit"
+            | "for"
+            | "md"
+            | "mkdir"
+            | "move"
+            | "path"
+            | "ren"
+            | "rename"
+            | "rmdir"
+            | "set"
+            | "start"
+            | "time"
+            | "type"
+            | "ver"
+            | "vol"
+            | "where"
+            | "xcopy"
+    ) || normalized.contains(" /")
 }
 
 fn prepare_sandbox_dirs(cwd: &std::path::Path) {

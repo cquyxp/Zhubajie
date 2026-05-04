@@ -5,7 +5,10 @@ use tools::{execute_tool, mvp_tool_specs};
 
 use crate::CliOutputFormat;
 
-pub(crate) fn run_server(port: u16, output_format: CliOutputFormat) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn run_server(
+    port: u16,
+    output_format: CliOutputFormat,
+) -> Result<(), Box<dyn std::error::Error>> {
     let registry = WorkerRegistry::new();
 
     match output_format {
@@ -56,7 +59,9 @@ pub(crate) fn run_mcp_serve() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Read `.claw/worker-state.json` from the current working directory and print it.
-pub(crate) fn run_worker_state(output_format: CliOutputFormat) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn run_worker_state(
+    output_format: CliOutputFormat,
+) -> Result<(), Box<dyn std::error::Error>> {
     let cwd = env::current_dir()?;
     let state_path = cwd.join(".claw").join("worker-state.json");
     if !state_path.exists() {

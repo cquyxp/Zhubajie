@@ -23,6 +23,8 @@ pub enum HookEvent {
     PreToolUse,
     PostToolUse,
     PostToolUseFailure,
+    PreCompact,
+    PostCompact,
 }
 
 impl HookEvent {
@@ -32,6 +34,8 @@ impl HookEvent {
             Self::PreToolUse => "PreToolUse",
             Self::PostToolUse => "PostToolUse",
             Self::PostToolUseFailure => "PostToolUseFailure",
+            Self::PreCompact => "PreCompact",
+            Self::PostCompact => "PostCompact",
         }
     }
 }
@@ -287,6 +291,52 @@ impl HookRunner {
             tool_input,
             Some(tool_error),
             true,
+            abort_signal,
+            reporter,
+        )
+    }
+
+    // ── lifecycle hooks (compaction) ────────────────────────────────────
+
+    /// Run all configured PreCompact hooks.
+    #[must_use]
+    pub fn run_pre_compact(
+        &self,
+        abort_signal: Option<&HookAbortSignal>,
+        reporter: Option<&mut dyn HookProgressReporter>,
+    ) -> HookRunResult {
+        if self.config.pre_compact().is_empty() {
+            return HookRunResult::allow(Vec::new());
+        }
+        Self::run_commands(
+            HookEvent::PreCompact,
+            self.config.pre_compact(),
+            "",
+            "",
+            None,
+            false,
+            abort_signal,
+            reporter,
+        )
+    }
+
+    /// Run all configured PostCompact hooks.
+    #[must_use]
+    pub fn run_post_compact(
+        &self,
+        abort_signal: Option<&HookAbortSignal>,
+        reporter: Option<&mut dyn HookProgressReporter>,
+    ) -> HookRunResult {
+        if self.config.post_compact().is_empty() {
+            return HookRunResult::allow(Vec::new());
+        }
+        Self::run_commands(
+            HookEvent::PostCompact,
+            self.config.post_compact(),
+            "",
+            "",
+            None,
+            false,
             abort_signal,
             reporter,
         )
@@ -844,6 +894,8 @@ mod tests {
             vec![shell_snippet("printf 'pre ok'")],
             Vec::new(),
             Vec::new(),
+            Vec::new(),
+            Vec::new(),
         ));
 
         let result = runner.run_pre_tool_use("Read", r#"{"path":"README.md"}"#);
@@ -855,6 +907,8 @@ mod tests {
     fn denies_exit_code_two() {
         let runner = HookRunner::new(RuntimeHookConfig::new(
             vec![shell_snippet("printf 'blocked by hook'; exit 2")],
+            Vec::new(),
+            Vec::new(),
             Vec::new(),
             Vec::new(),
         ));
@@ -870,6 +924,8 @@ mod tests {
         let runner = HookRunner::from_feature_config(&RuntimeFeatureConfig::default().with_hooks(
             RuntimeHookConfig::new(
                 vec![shell_snippet("printf 'warning hook'; exit 1")],
+                Vec::new(),
+                Vec::new(),
                 Vec::new(),
                 Vec::new(),
             ),
@@ -895,6 +951,8 @@ mod tests {
             )],
             Vec::new(),
             Vec::new(),
+            Vec::new(),
+            Vec::new(),
         ));
 
         let result = runner.run_pre_tool_use("bash", r#"{"command":"pwd"}"#);
@@ -915,6 +973,8 @@ mod tests {
             Vec::new(),
             Vec::new(),
             vec![shell_snippet("printf 'failure hook ran'")],
+            Vec::new(),
+            Vec::new(),
         ));
 
         // when
@@ -936,6 +996,8 @@ mod tests {
                 shell_snippet("printf 'broken failure hook'; exit 1"),
                 shell_snippet("printf 'later failure hook'"),
             ],
+            Vec::new(),
+            Vec::new(),
         ));
 
         // when
@@ -962,6 +1024,8 @@ mod tests {
                 shell_snippet("printf 'first'"),
                 shell_snippet("printf 'second'"),
             ],
+            Vec::new(),
+            Vec::new(),
             Vec::new(),
             Vec::new(),
         ));
@@ -1025,6 +1089,8 @@ mod tests {
             ],
             Vec::new(),
             Vec::new(),
+            Vec::new(),
+            Vec::new(),
         ));
 
         // when
@@ -1045,6 +1111,8 @@ mod tests {
             vec![shell_snippet(
                 "printf '{not-json\nsecond line'; printf 'stderr warning' >&2; exit 1",
             )],
+            Vec::new(),
+            Vec::new(),
             Vec::new(),
             Vec::new(),
         ));
@@ -1068,6 +1136,8 @@ mod tests {
     fn abort_signal_cancels_long_running_hook_and_reports_progress() {
         let runner = HookRunner::new(RuntimeHookConfig::new(
             vec![shell_snippet("sleep 5")],
+            Vec::new(),
+            Vec::new(),
             Vec::new(),
             Vec::new(),
         ));

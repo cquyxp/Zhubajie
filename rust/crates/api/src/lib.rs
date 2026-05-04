@@ -12,7 +12,9 @@ pub use adapters::{
     convert_messages, prompt_cache_record_to_runtime_event, push_prompt_cache_record,
 };
 
-pub use model_config::{DynamicProviderRegistry, ModelConfig, ModelProviderConfig, ModelRoutingConfig};
+pub use model_config::{
+    DynamicProviderRegistry, ModelConfig, ModelProviderConfig, ModelRoutingConfig,
+};
 
 pub use client::{
     oauth_token_is_expired, read_base_url, read_xai_base_url, resolve_saved_oauth_token,

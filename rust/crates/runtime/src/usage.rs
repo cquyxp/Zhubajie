@@ -298,6 +298,7 @@ mod tests {
             blocks: vec![ContentBlock::Text {
                 text: "done".to_string(),
             }],
+            reasoning_content: None,
             usage: Some(TokenUsage {
                 input_tokens: 5,
                 output_tokens: 2,

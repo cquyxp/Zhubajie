@@ -14,12 +14,66 @@ pub enum ProviderKind {
     OpenAi,
 }
 
+/// Capability flags for a model/provider. These centralize the knowledge
+/// that was previously scattered as model-name-prefix heuristics across
+/// `openai_compat.rs`, so callers can query capabilities directly instead
+/// of duplicating pattern-matching logic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderCapabilities {
+    /// Model rejects tuning parameters (temperature, top_p, etc.).
+    /// Applies to reasoning/chain-of-thought models (o1/o3/o4, grok-3-mini, QwQ).
+    pub is_reasoning_default: bool,
+    /// Model rejects the `is_error` field in tool result content blocks.
+    /// Kimi models via DashScope are the known case.
+    pub rejects_is_error_field: bool,
+}
+
+impl ProviderCapabilities {
+    /// Default capabilities for a standard non-reasoning model.
+    #[must_use]
+    pub const fn standard() -> Self {
+        Self {
+            is_reasoning_default: false,
+            rejects_is_error_field: false,
+        }
+    }
+
+    /// Capabilities for a reasoning model (no tuning params).
+    #[must_use]
+    pub const fn reasoning() -> Self {
+        Self {
+            is_reasoning_default: true,
+            rejects_is_error_field: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProviderMetadata {
     pub provider: ProviderKind,
     pub auth_env: &'static str,
     pub base_url_env: &'static str,
     pub default_base_url: &'static str,
+    pub capabilities: ProviderCapabilities,
+}
+
+impl ProviderMetadata {
+    #[must_use]
+    pub const fn new(
+        provider: ProviderKind,
+        auth_env: &'static str,
+        base_url_env: &'static str,
+        default_base_url: &'static str,
+        capabilities: ProviderCapabilities,
+    ) -> Self {
+        Self {
+            provider,
+            auth_env,
+            base_url_env,
+            default_base_url,
+            capabilities,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,84 +85,116 @@ pub struct ModelTokenLimit {
 const MODEL_REGISTRY: &[(&str, ProviderMetadata)] = &[
     (
         "opus",
-        ProviderMetadata {
-            provider: ProviderKind::Anthropic,
-            auth_env: "ANTHROPIC_API_KEY",
-            base_url_env: "ANTHROPIC_BASE_URL",
-            default_base_url: anthropic::DEFAULT_BASE_URL,
-        },
+        ProviderMetadata::new(
+            ProviderKind::Anthropic,
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_BASE_URL",
+            anthropic::DEFAULT_BASE_URL,
+            ProviderCapabilities::standard(),
+        ),
     ),
     (
         "sonnet",
-        ProviderMetadata {
-            provider: ProviderKind::Anthropic,
-            auth_env: "ANTHROPIC_API_KEY",
-            base_url_env: "ANTHROPIC_BASE_URL",
-            default_base_url: anthropic::DEFAULT_BASE_URL,
-        },
+        ProviderMetadata::new(
+            ProviderKind::Anthropic,
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_BASE_URL",
+            anthropic::DEFAULT_BASE_URL,
+            ProviderCapabilities::standard(),
+        ),
     ),
     (
         "haiku",
-        ProviderMetadata {
-            provider: ProviderKind::Anthropic,
-            auth_env: "ANTHROPIC_API_KEY",
-            base_url_env: "ANTHROPIC_BASE_URL",
-            default_base_url: anthropic::DEFAULT_BASE_URL,
-        },
+        ProviderMetadata::new(
+            ProviderKind::Anthropic,
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_BASE_URL",
+            anthropic::DEFAULT_BASE_URL,
+            ProviderCapabilities::standard(),
+        ),
     ),
     (
         "grok",
-        ProviderMetadata {
-            provider: ProviderKind::Xai,
-            auth_env: "XAI_API_KEY",
-            base_url_env: "XAI_BASE_URL",
-            default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
-        },
+        ProviderMetadata::new(
+            ProviderKind::Xai,
+            "XAI_API_KEY",
+            "XAI_BASE_URL",
+            openai_compat::DEFAULT_XAI_BASE_URL,
+            ProviderCapabilities::standard(),
+        ),
     ),
     (
         "grok-3",
-        ProviderMetadata {
-            provider: ProviderKind::Xai,
-            auth_env: "XAI_API_KEY",
-            base_url_env: "XAI_BASE_URL",
-            default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
-        },
+        ProviderMetadata::new(
+            ProviderKind::Xai,
+            "XAI_API_KEY",
+            "XAI_BASE_URL",
+            openai_compat::DEFAULT_XAI_BASE_URL,
+            ProviderCapabilities::standard(),
+        ),
     ),
     (
         "grok-mini",
-        ProviderMetadata {
-            provider: ProviderKind::Xai,
-            auth_env: "XAI_API_KEY",
-            base_url_env: "XAI_BASE_URL",
-            default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
-        },
+        ProviderMetadata::new(
+            ProviderKind::Xai,
+            "XAI_API_KEY",
+            "XAI_BASE_URL",
+            openai_compat::DEFAULT_XAI_BASE_URL,
+            ProviderCapabilities::reasoning(),
+        ),
     ),
     (
         "grok-3-mini",
-        ProviderMetadata {
-            provider: ProviderKind::Xai,
-            auth_env: "XAI_API_KEY",
-            base_url_env: "XAI_BASE_URL",
-            default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
-        },
+        ProviderMetadata::new(
+            ProviderKind::Xai,
+            "XAI_API_KEY",
+            "XAI_BASE_URL",
+            openai_compat::DEFAULT_XAI_BASE_URL,
+            ProviderCapabilities::reasoning(),
+        ),
     ),
     (
         "grok-2",
-        ProviderMetadata {
-            provider: ProviderKind::Xai,
-            auth_env: "XAI_API_KEY",
-            base_url_env: "XAI_BASE_URL",
-            default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
-        },
+        ProviderMetadata::new(
+            ProviderKind::Xai,
+            "XAI_API_KEY",
+            "XAI_BASE_URL",
+            openai_compat::DEFAULT_XAI_BASE_URL,
+            ProviderCapabilities::standard(),
+        ),
     ),
     (
         "kimi",
-        ProviderMetadata {
-            provider: ProviderKind::OpenAi,
-            auth_env: "DASHSCOPE_API_KEY",
-            base_url_env: "DASHSCOPE_BASE_URL",
-            default_base_url: openai_compat::DEFAULT_DASHSCOPE_BASE_URL,
-        },
+        ProviderMetadata::new(
+            ProviderKind::OpenAi,
+            "DASHSCOPE_API_KEY",
+            "DASHSCOPE_BASE_URL",
+            openai_compat::DEFAULT_DASHSCOPE_BASE_URL,
+            ProviderCapabilities {
+                is_reasoning_default: false,
+                rejects_is_error_field: true,
+            },
+        ),
+    ),
+    (
+        "deepseek-v4-flash",
+        ProviderMetadata::new(
+            ProviderKind::OpenAi,
+            "DEEPSEEK_API_KEY",
+            "DEEPSEEK_BASE_URL",
+            openai_compat::DEFAULT_DEEPSEEK_BASE_URL,
+            ProviderCapabilities::standard(),
+        ),
+    ),
+    (
+        "deepseek-v4-pro",
+        ProviderMetadata::new(
+            ProviderKind::OpenAi,
+            "DEEPSEEK_API_KEY",
+            "DEEPSEEK_BASE_URL",
+            openai_compat::DEFAULT_DEEPSEEK_BASE_URL,
+            ProviderCapabilities::standard(),
+        ),
     ),
 ];
 
@@ -116,6 +202,13 @@ const MODEL_REGISTRY: &[(&str, ProviderMetadata)] = &[
 pub fn resolve_model_alias(model: &str) -> String {
     let trimmed = model.trim();
     let lower = trimmed.to_ascii_lowercase();
+    // DeepSeek deprecated deepseek-chat / deepseek-reasoner in favour of V4.
+    // Map old names so existing configs continue to work seamlessly.
+    let lower = match lower.as_str() {
+        "deepseek-chat" => "deepseek-v4-flash",
+        "deepseek-reasoner" => "deepseek-v4-pro",
+        other => other,
+    };
     MODEL_REGISTRY
         .iter()
         .find_map(|(alias, metadata)| {
@@ -144,58 +237,171 @@ pub fn resolve_model_alias(model: &str) -> String {
 #[must_use]
 pub fn metadata_for_model(model: &str) -> Option<ProviderMetadata> {
     let canonical = resolve_model_alias(model);
+
+    // Check the static registry first — it has the most precise capabilities
+    // per-model (e.g. grok-3-mini is reasoning while grok-3 is not).
+    if let Some((_, meta)) = MODEL_REGISTRY.iter().find(|(alias, _)| *alias == canonical) {
+        return Some(*meta);
+    }
+
     if canonical.starts_with("claude") {
-        return Some(ProviderMetadata {
-            provider: ProviderKind::Anthropic,
-            auth_env: "ANTHROPIC_API_KEY",
-            base_url_env: "ANTHROPIC_BASE_URL",
-            default_base_url: anthropic::DEFAULT_BASE_URL,
-        });
+        return Some(ProviderMetadata::new(
+            ProviderKind::Anthropic,
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_BASE_URL",
+            anthropic::DEFAULT_BASE_URL,
+            ProviderCapabilities::standard(),
+        ));
     }
     if canonical.starts_with("grok") {
-        return Some(ProviderMetadata {
-            provider: ProviderKind::Xai,
-            auth_env: "XAI_API_KEY",
-            base_url_env: "XAI_BASE_URL",
-            default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
-        });
+        // grok-3-mini is reasoning; other grok models are not. The registry
+        // above handles the named variants; this prefix catch-all covers
+        // future grok models with standard capabilities.
+        return Some(ProviderMetadata::new(
+            ProviderKind::Xai,
+            "XAI_API_KEY",
+            "XAI_BASE_URL",
+            openai_compat::DEFAULT_XAI_BASE_URL,
+            ProviderCapabilities::standard(),
+        ));
     }
     // Explicit provider-namespaced models (e.g. "openai/gpt-4.1-mini") must
     // route to the correct provider regardless of which auth env vars are set.
     // Without this, detect_provider_kind falls through to the auth-sniffer
     // order and misroutes to Anthropic if ANTHROPIC_API_KEY is present.
     if canonical.starts_with("openai/") || canonical.starts_with("gpt-") {
-        return Some(ProviderMetadata {
-            provider: ProviderKind::OpenAi,
-            auth_env: "OPENAI_API_KEY",
-            base_url_env: "OPENAI_BASE_URL",
-            default_base_url: openai_compat::DEFAULT_OPENAI_BASE_URL,
-        });
+        return Some(ProviderMetadata::new(
+            ProviderKind::OpenAi,
+            "OPENAI_API_KEY",
+            "OPENAI_BASE_URL",
+            openai_compat::DEFAULT_OPENAI_BASE_URL,
+            ProviderCapabilities::standard(),
+        ));
     }
     // Alibaba DashScope compatible-mode endpoint. Routes qwen/* and bare
     // qwen-* model names (qwen-max, qwen-plus, qwen-turbo, qwen-qwq, etc.)
     // to the OpenAI-compat client pointed at DashScope's /compatible-mode/v1.
     // Uses the OpenAi provider kind because DashScope speaks the OpenAI REST
     // shape — only the base URL and auth env var differ.
+    //
+    // Note: qwen-qwq / qwen3-thinking variants are reasoning models, but we
+    // cannot distinguish them from non-reasoning qwen models at the prefix
+    // level here — the fine-grained check is done by the heuristic fallback
+    // in `is_reasoning_model()` via [`model_capabilities`].
     if canonical.starts_with("qwen/") || canonical.starts_with("qwen-") {
-        return Some(ProviderMetadata {
-            provider: ProviderKind::OpenAi,
-            auth_env: "DASHSCOPE_API_KEY",
-            base_url_env: "DASHSCOPE_BASE_URL",
-            default_base_url: openai_compat::DEFAULT_DASHSCOPE_BASE_URL,
-        });
+        return Some(ProviderMetadata::new(
+            ProviderKind::OpenAi,
+            "DASHSCOPE_API_KEY",
+            "DASHSCOPE_BASE_URL",
+            openai_compat::DEFAULT_DASHSCOPE_BASE_URL,
+            ProviderCapabilities::standard(),
+        ));
     }
     // Kimi models (kimi-k2.5, kimi-k1.5, etc.) via DashScope compatible-mode.
     // Routes kimi/* and kimi-* model names to DashScope endpoint.
     if canonical.starts_with("kimi/") || canonical.starts_with("kimi-") {
-        return Some(ProviderMetadata {
-            provider: ProviderKind::OpenAi,
-            auth_env: "DASHSCOPE_API_KEY",
-            base_url_env: "DASHSCOPE_BASE_URL",
-            default_base_url: openai_compat::DEFAULT_DASHSCOPE_BASE_URL,
-        });
+        return Some(ProviderMetadata::new(
+            ProviderKind::OpenAi,
+            "DASHSCOPE_API_KEY",
+            "DASHSCOPE_BASE_URL",
+            openai_compat::DEFAULT_DASHSCOPE_BASE_URL,
+            ProviderCapabilities {
+                is_reasoning_default: false,
+                rejects_is_error_field: true,
+            },
+        ));
+    }
+    // DeepSeek V4 models via api.deepseek.com.
+    // Uses the OpenAI-compatible wire format — only the base URL and auth env
+    // var differ from the default OpenAI config.
+    if canonical.starts_with("deepseek") {
+        return Some(ProviderMetadata::new(
+            ProviderKind::OpenAi,
+            "DEEPSEEK_API_KEY",
+            "DEEPSEEK_BASE_URL",
+            openai_compat::DEFAULT_DEEPSEEK_BASE_URL,
+            ProviderCapabilities::standard(),
+        ));
     }
     None
+}
+
+/// Look up capability flags for a model, falling back to prefix heuristics
+/// when the model is not in [`metadata_for_model`]. This is the centralized
+/// replacement for the ad-hoc model-name checks that were scattered across
+/// `openai_compat.rs`.
+#[must_use]
+pub fn model_capabilities(model: &str) -> ProviderCapabilities {
+    // 1. Check metadata — this covers everything in MODEL_REGISTRY and the
+    //    prefix-based family matchers (claude, grok, gpt-, qwen-, kimi, etc.).
+    //    The metadata has correct capabilities for most models, but prefix-
+    //    level matchers (e.g. "all qwen-* models") can't distinguish reasoning
+    //    variants within a family — we apply heuristic overrides below.
+    if let Some(meta) = metadata_for_model(model) {
+        // 2. Apply heuristic overrides for reasoning variants within families
+        //    that the prefix matcher couldn't distinguish.
+        if !meta.capabilities.is_reasoning_default && is_reasoning_model_by_name(model) {
+            return ProviderCapabilities {
+                is_reasoning_default: true,
+                ..meta.capabilities
+            };
+        }
+        return meta.capabilities;
+    }
+
+    // 3. Truly unknown model — apply coarse prefix heuristics.
+    let caps = caps_by_name(model);
+    if caps.is_reasoning_default || caps.rejects_is_error_field {
+        return caps;
+    }
+
+    ProviderCapabilities::standard()
+}
+
+/// Precisely match reasoning-model name patterns. This is the same logic as
+/// the fallback in `openai_compat.rs::is_reasoning_model()` — duplicated here
+/// so `model_capabilities` can apply overrides without a circular dependency.
+fn is_reasoning_model_by_name(model: &str) -> bool {
+    let lowered = model.to_ascii_lowercase();
+    let canonical = lowered.rsplit('/').next().unwrap_or(lowered.as_str());
+    canonical.starts_with("o1")
+        || canonical.starts_with("o3")
+        || canonical.starts_with("o4")
+        || canonical == "grok-3-mini"
+        || canonical.starts_with("qwen-qwq")
+        || canonical.starts_with("qwq")
+        || canonical.contains("thinking")
+}
+
+/// Broad prefix-based capability detection for truly unknown models.
+/// Returns standard capabilities when no specific pattern matches.
+fn caps_by_name(model: &str) -> ProviderCapabilities {
+    let lowered = model.to_ascii_lowercase();
+    let canonical = lowered.rsplit('/').next().unwrap_or(lowered.as_str());
+
+    if canonical.starts_with("o1") || canonical.starts_with("o3") || canonical.starts_with("o4") {
+        return ProviderCapabilities::reasoning();
+    }
+    if canonical == "grok-3-mini" {
+        return ProviderCapabilities::reasoning();
+    }
+    if canonical.starts_with("qwen-qwq")
+        || canonical.starts_with("qwq")
+        || canonical.contains("thinking")
+    {
+        return ProviderCapabilities {
+            is_reasoning_default: true,
+            rejects_is_error_field: false,
+        };
+    }
+    if canonical.starts_with("kimi") {
+        return ProviderCapabilities {
+            is_reasoning_default: false,
+            rejects_is_error_field: true,
+        };
+    }
+
+    ProviderCapabilities::standard()
 }
 
 #[must_use]
@@ -220,6 +426,9 @@ pub fn detect_provider_kind(model: &str) -> ProviderKind {
     }
     if openai_compat::has_api_key("XAI_API_KEY") {
         return ProviderKind::Xai;
+    }
+    if openai_compat::has_api_key("DEEPSEEK_API_KEY") {
+        return ProviderKind::OpenAi;
     }
     // Last resort: if OPENAI_BASE_URL is set without OPENAI_API_KEY (some
     // local providers like Ollama don't require auth), still route there.
@@ -273,6 +482,12 @@ pub fn model_token_limit(model: &str) -> Option<ModelTokenLimit> {
         "kimi-k2.5" | "kimi-k1.5" => Some(ModelTokenLimit {
             max_output_tokens: 16_384,
             context_window_tokens: 256_000,
+        }),
+        // DeepSeek V4 models — 1M context, up to 384K output
+        // Source: https://api-docs.deepseek.com/zh-cn/news/news260424
+        "deepseek-v4-flash" | "deepseek-v4-pro" => Some(ModelTokenLimit {
+            max_output_tokens: 384_000,
+            context_window_tokens: 1_000_000,
         }),
         _ => None,
     }
@@ -433,13 +648,25 @@ pub(crate) fn load_dotenv_file(
     Some(parse_dotenv(&content))
 }
 
-/// Look up `key` in a `.env` file located in the current working directory.
-/// Returns `None` when the file is missing, the key is absent, or the value
+/// Look up `key` in a `.env` file, checking the current working directory
+/// first, then falling back to the directory containing the `claw` binary.
+/// Returns `None` when neither file exists, the key is absent, or the value
 /// is empty.
 pub(crate) fn dotenv_value(key: &str) -> Option<String> {
-    let cwd = std::env::current_dir().ok()?;
-    let values = load_dotenv_file(&cwd.join(".env"))?;
-    values.get(key).filter(|value| !value.is_empty()).cloned()
+    // 1. Check CWD .env
+    if let Some(value) = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| load_dotenv_file(&cwd.join(".env")))
+        .and_then(|values| values.get(key).filter(|v| !v.is_empty()).cloned())
+    {
+        return Some(value);
+    }
+    // 2. Fall back to .env next to the binary (install directory)
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|p| p.join(".env")))
+        .and_then(|path| load_dotenv_file(&path))
+        .and_then(|values| values.get(key).filter(|v| !v.is_empty()).cloned())
 }
 
 #[cfg(test)]
@@ -679,6 +906,7 @@ mod tests {
                 content: vec![InputContentBlock::Text {
                     text: "x".repeat(600_000),
                 }],
+                reasoning_content: None,
             }],
             system: Some("Keep the answer short.".to_string()),
             tools: Some(vec![ToolDefinition {
@@ -726,6 +954,7 @@ mod tests {
                 content: vec![InputContentBlock::Text {
                     text: "x".repeat(600_000),
                 }],
+                reasoning_content: None,
             }],
             system: None,
             tools: None,
@@ -746,6 +975,7 @@ mod tests {
                 content: vec![InputContentBlock::Text {
                     text: "hello".to_string(),
                 }],
+                reasoning_content: None,
             }],
             system: None,
             tools: None,
@@ -798,6 +1028,7 @@ mod tests {
                 content: vec![InputContentBlock::Text {
                     text: "x".repeat(1_000_000), // Large input to exceed context window
                 }],
+                reasoning_content: None,
             }],
             system: Some("Keep the answer short.".to_string()),
             tools: None,
@@ -1150,4 +1381,124 @@ NO_EQUALS_LINE
     // (env_lock only protects within a single binary). The detection logic
     // is covered: OPENAI_BASE_URL alone routes to OpenAi as a last-resort
     // fallback in detect_provider_kind().
+
+    #[test]
+    fn standard_models_have_standard_capabilities() {
+        for model in &[
+            "opus",
+            "sonnet",
+            "haiku",
+            "claude-sonnet-4-6",
+            "claude-opus-4-6",
+        ] {
+            let caps = super::model_capabilities(model);
+            assert!(
+                !caps.is_reasoning_default,
+                "{model} should not be reasoning"
+            );
+            assert!(
+                !caps.rejects_is_error_field,
+                "{model} should not reject is_error"
+            );
+        }
+        for model in &["grok", "grok-3", "grok-2"] {
+            let caps = super::model_capabilities(model);
+            assert!(
+                !caps.is_reasoning_default,
+                "{model} should not be reasoning"
+            );
+        }
+        for model in &["gpt-4o", "gpt-4.1-mini", "openai/gpt-4.1"] {
+            let caps = super::model_capabilities(model);
+            assert!(
+                !caps.is_reasoning_default,
+                "{model} should not be reasoning"
+            );
+        }
+        for model in &["qwen-max", "qwen-plus", "qwen/qwen-plus", "qwen-turbo"] {
+            let caps = super::model_capabilities(model);
+            assert!(
+                !caps.is_reasoning_default,
+                "{model} should not be reasoning"
+            );
+        }
+    }
+
+    #[test]
+    fn reasoning_models_have_reasoning_capabilities() {
+        for model in &["grok-mini", "grok-3-mini"] {
+            let caps = super::model_capabilities(model);
+            assert!(caps.is_reasoning_default, "{model} should be reasoning");
+            assert!(
+                !caps.rejects_is_error_field,
+                "{model} should not reject is_error"
+            );
+        }
+        for model in &["o1", "o1-mini", "o3-mini", "o4"] {
+            let caps = super::model_capabilities(model);
+            assert!(caps.is_reasoning_default, "{model} should be reasoning");
+        }
+        for model in &[
+            "qwen-qwq-32b",
+            "qwen/qwen-qwq-32b",
+            "qwq-plus",
+            "qwen3-30b-a3b-thinking",
+        ] {
+            let caps = super::model_capabilities(model);
+            assert!(caps.is_reasoning_default, "{model} should be reasoning");
+        }
+    }
+
+    #[test]
+    fn kimi_models_reject_is_error_field() {
+        for model in &[
+            "kimi",
+            "kimi-k2.5",
+            "kimi-k1.5",
+            "kimi-moonshot",
+            "KIMI-K2.5",
+            "dashscope/kimi-k2.5",
+        ] {
+            let caps = super::model_capabilities(model);
+            assert!(
+                !caps.is_reasoning_default,
+                "{model} should not be reasoning"
+            );
+            assert!(
+                caps.rejects_is_error_field,
+                "{model} should reject is_error"
+            );
+        }
+    }
+
+    #[test]
+    fn deepseek_models_have_standard_capabilities() {
+        for model in &["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat"] {
+            let caps = super::model_capabilities(model);
+            assert!(
+                !caps.is_reasoning_default,
+                "{model} should not be reasoning"
+            );
+            assert!(
+                !caps.rejects_is_error_field,
+                "{model} should not reject is_error"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_models_default_to_standard_capabilities() {
+        let caps = super::model_capabilities("some-random-model-v42");
+        assert!(!caps.is_reasoning_default);
+        assert!(!caps.rejects_is_error_field);
+    }
+
+    #[test]
+    fn heuristic_fallback_matches_reasoning_prefixes_for_unknown_models() {
+        let caps = super::model_capabilities("o1-preview");
+        assert!(
+            caps.is_reasoning_default,
+            "o1-preview should be reasoning via fallback"
+        );
+    }
 }

@@ -4,7 +4,7 @@ use reqwest::blocking::Client;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::{to_pretty_json, global_lsp_registry, global_mcp_registry};
+use crate::{global_lsp_registry, global_mcp_registry, to_pretty_json};
 
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn run_lsp(input: LspInput) -> Result<String, String> {
@@ -237,4 +237,3 @@ pub(crate) struct McpToolInput {
 pub(crate) struct TestingPermissionInput {
     action: String,
 }
-

@@ -501,6 +501,8 @@ mod tests {
             pre_tool_use: vec!["printf 'blocked by plugin'; exit 2".to_string()],
             post_tool_use: Vec::new(),
             post_tool_use_failure: Vec::new(),
+            pre_compact: Vec::new(),
+            post_compact: Vec::new(),
         });
 
         // when
@@ -521,6 +523,8 @@ mod tests {
             ],
             post_tool_use: Vec::new(),
             post_tool_use_failure: Vec::new(),
+            pre_compact: Vec::new(),
+            post_compact: Vec::new(),
         });
 
         // when

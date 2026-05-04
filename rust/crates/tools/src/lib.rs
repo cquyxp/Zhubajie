@@ -3,33 +3,30 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use crate::bash::command_exists;
 use api::{
     convert_messages, max_tokens_for_model, resolve_model_alias, ApiError, ContentBlockDelta,
-    MessageRequest, MessageResponse as ApiMessageResponse, OutputContentBlock,
-    ProviderClient, StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition,
+    MessageRequest, MessageResponse as ApiMessageResponse, OutputContentBlock, ProviderClient,
+    StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition,
 };
 use plugins::PluginTool;
 use runtime::{
-    dedupe_superseded_commit_events,
-    load_system_prompt,
+    dedupe_superseded_commit_events, load_system_prompt,
     lsp_client::LspRegistry,
     mcp_tool_bridge::McpToolRegistry,
     permission_enforcer::{EnforcementResult, PermissionEnforcer},
-
     summary_compression::compress_summary_text,
     task_registry::TaskRegistry,
     team_cron_registry::{CronRegistry, TeamRegistry},
     worker_boot::WorkerRegistry,
-    ApiClient, ApiRequest, AssistantEvent, BashCommandInput,
-    ConfigLoader, ContentBlock,
+    ApiClient, ApiRequest, AssistantEvent, BashCommandInput, ConfigLoader, ContentBlock,
     ConversationRuntime, GrepSearchInput, LaneCommitProvenance, LaneEvent, LaneEventBlocker,
-    LaneFailureClass, McpDegradedReport, MessageResponse,
-    PermissionMode, PermissionPolicy, PromptCacheEvent, ProviderFallbackConfig,
-    RuntimeError, Session, TaskPacket, ToolError, ToolExecutor,
+    LaneFailureClass, McpDegradedReport, MessageResponse, PermissionMode, PermissionPolicy,
+    PromptCacheEvent, ProviderFallbackConfig, RuntimeError, Session, TaskPacket, ToolError,
+    ToolExecutor,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use crate::bash::command_exists;
 
 pub mod bash;
 pub mod file_tools;
@@ -1211,26 +1208,32 @@ fn execute_tool_with_enforcer(
         }
         "read_file" => {
             maybe_enforce_permission_check(enforcer, name, input)?;
-            from_value::<crate::file_tools::ReadFileInput>(input).and_then(crate::file_tools::run_read_file)
+            from_value::<crate::file_tools::ReadFileInput>(input)
+                .and_then(crate::file_tools::run_read_file)
         }
         "write_file" => {
             maybe_enforce_permission_check(enforcer, name, input)?;
-            from_value::<crate::file_tools::WriteFileInput>(input).and_then(crate::file_tools::run_write_file)
+            from_value::<crate::file_tools::WriteFileInput>(input)
+                .and_then(crate::file_tools::run_write_file)
         }
         "edit_file" => {
             maybe_enforce_permission_check(enforcer, name, input)?;
-            from_value::<crate::file_tools::EditFileInput>(input).and_then(crate::file_tools::run_edit_file)
+            from_value::<crate::file_tools::EditFileInput>(input)
+                .and_then(crate::file_tools::run_edit_file)
         }
         "glob_search" => {
             maybe_enforce_permission_check(enforcer, name, input)?;
-            from_value::<crate::file_tools::GlobSearchInputValue>(input).and_then(crate::file_tools::run_glob_search)
+            from_value::<crate::file_tools::GlobSearchInputValue>(input)
+                .and_then(crate::file_tools::run_glob_search)
         }
         "grep_search" => {
             maybe_enforce_permission_check(enforcer, name, input)?;
             from_value::<GrepSearchInput>(input).and_then(crate::file_tools::run_grep_search)
         }
-        "WebFetch" => from_value::<crate::web_tools::WebFetchInput>(input).and_then(crate::web_tools::run_web_fetch),
-        "WebSearch" => from_value::<crate::web_tools::WebSearchInput>(input).and_then(crate::web_tools::run_web_search),
+        "WebFetch" => from_value::<crate::web_tools::WebFetchInput>(input)
+            .and_then(crate::web_tools::run_web_fetch),
+        "WebSearch" => from_value::<crate::web_tools::WebSearchInput>(input)
+            .and_then(crate::web_tools::run_web_search),
         "TodoWrite" => from_value::<TodoWriteInput>(input).and_then(run_todo_write),
         "Skill" => from_value::<SkillInput>(input).and_then(run_skill),
         "Agent" => from_value::<AgentInput>(input).and_then(run_agent),
@@ -1252,46 +1255,66 @@ fn execute_tool_with_enforcer(
             maybe_enforce_permission_check_with_mode(enforcer, name, input, classified_mode)?;
             crate::bash::run_powershell(ps_input)
         }
-        "AskUserQuestion" => {
-            from_value::<crate::task_tools::AskUserQuestionInput>(input).and_then(crate::task_tools::run_ask_user_question)
+        "AskUserQuestion" => from_value::<crate::task_tools::AskUserQuestionInput>(input)
+            .and_then(crate::task_tools::run_ask_user_question),
+        "TaskCreate" => from_value::<crate::task_tools::TaskCreateInput>(input)
+            .and_then(crate::task_tools::run_task_create),
+        "RunTaskPacket" => {
+            from_value::<TaskPacket>(input).and_then(crate::task_tools::run_task_packet)
         }
-        "TaskCreate" => from_value::<crate::task_tools::TaskCreateInput>(input).and_then(crate::task_tools::run_task_create),
-        "RunTaskPacket" => from_value::<TaskPacket>(input).and_then(crate::task_tools::run_task_packet),
-        "TaskGet" => from_value::<crate::task_tools::TaskIdInput>(input).and_then(crate::task_tools::run_task_get),
+        "TaskGet" => from_value::<crate::task_tools::TaskIdInput>(input)
+            .and_then(crate::task_tools::run_task_get),
         "TaskList" => crate::task_tools::run_task_list(input.clone()),
-        "TaskStop" => from_value::<crate::task_tools::TaskIdInput>(input).and_then(crate::task_tools::run_task_stop),
-        "TaskUpdate" => from_value::<crate::task_tools::TaskUpdateInput>(input).and_then(crate::task_tools::run_task_update),
-        "TaskOutput" => from_value::<crate::task_tools::TaskIdInput>(input).and_then(crate::task_tools::run_task_output),
-        "WorkerCreate" => from_value::<crate::task_tools::WorkerCreateInput>(input).and_then(crate::task_tools::run_worker_create),
-        "WorkerGet" => from_value::<crate::task_tools::WorkerIdInput>(input).and_then(crate::task_tools::run_worker_get),
-        "WorkerObserve" => from_value::<crate::task_tools::WorkerObserveInput>(input).and_then(crate::task_tools::run_worker_observe),
-        "WorkerResolveTrust" => {
-            from_value::<crate::task_tools::WorkerIdInput>(input).and_then(crate::task_tools::run_worker_resolve_trust)
+        "TaskStop" => from_value::<crate::task_tools::TaskIdInput>(input)
+            .and_then(crate::task_tools::run_task_stop),
+        "TaskUpdate" => from_value::<crate::task_tools::TaskUpdateInput>(input)
+            .and_then(crate::task_tools::run_task_update),
+        "TaskOutput" => from_value::<crate::task_tools::TaskIdInput>(input)
+            .and_then(crate::task_tools::run_task_output),
+        "WorkerCreate" => from_value::<crate::task_tools::WorkerCreateInput>(input)
+            .and_then(crate::task_tools::run_worker_create),
+        "WorkerGet" => from_value::<crate::task_tools::WorkerIdInput>(input)
+            .and_then(crate::task_tools::run_worker_get),
+        "WorkerObserve" => from_value::<crate::task_tools::WorkerObserveInput>(input)
+            .and_then(crate::task_tools::run_worker_observe),
+        "WorkerResolveTrust" => from_value::<crate::task_tools::WorkerIdInput>(input)
+            .and_then(crate::task_tools::run_worker_resolve_trust),
+        "WorkerAwaitReady" => from_value::<crate::task_tools::WorkerIdInput>(input)
+            .and_then(crate::task_tools::run_worker_await_ready),
+        "WorkerSendPrompt" => from_value::<crate::task_tools::WorkerSendPromptInput>(input)
+            .and_then(crate::task_tools::run_worker_send_prompt),
+        "WorkerRestart" => from_value::<crate::task_tools::WorkerIdInput>(input)
+            .and_then(crate::task_tools::run_worker_restart),
+        "WorkerTerminate" => from_value::<crate::task_tools::WorkerIdInput>(input)
+            .and_then(crate::task_tools::run_worker_terminate),
+        "WorkerObserveCompletion" => {
+            from_value::<crate::task_tools::WorkerObserveCompletionInput>(input)
+                .and_then(crate::task_tools::run_worker_observe_completion)
         }
-        "WorkerAwaitReady" => from_value::<crate::task_tools::WorkerIdInput>(input).and_then(crate::task_tools::run_worker_await_ready),
-        "WorkerSendPrompt" => {
-            from_value::<crate::task_tools::WorkerSendPromptInput>(input).and_then(crate::task_tools::run_worker_send_prompt)
-        }
-        "WorkerRestart" => from_value::<crate::task_tools::WorkerIdInput>(input).and_then(crate::task_tools::run_worker_restart),
-        "WorkerTerminate" => from_value::<crate::task_tools::WorkerIdInput>(input).and_then(crate::task_tools::run_worker_terminate),
-        "WorkerObserveCompletion" => from_value::<crate::task_tools::WorkerObserveCompletionInput>(input)
-            .and_then(crate::task_tools::run_worker_observe_completion),
-        "TeamCreate" => from_value::<crate::task_tools::TeamCreateInput>(input).and_then(crate::task_tools::run_team_create),
-        "TeamDelete" => from_value::<crate::task_tools::TeamDeleteInput>(input).and_then(crate::task_tools::run_team_delete),
-        "CronCreate" => from_value::<crate::task_tools::CronCreateInput>(input).and_then(crate::task_tools::run_cron_create),
-        "CronDelete" => from_value::<crate::task_tools::CronDeleteInput>(input).and_then(crate::task_tools::run_cron_delete),
+        "TeamCreate" => from_value::<crate::task_tools::TeamCreateInput>(input)
+            .and_then(crate::task_tools::run_team_create),
+        "TeamDelete" => from_value::<crate::task_tools::TeamDeleteInput>(input)
+            .and_then(crate::task_tools::run_team_delete),
+        "CronCreate" => from_value::<crate::task_tools::CronCreateInput>(input)
+            .and_then(crate::task_tools::run_cron_create),
+        "CronDelete" => from_value::<crate::task_tools::CronDeleteInput>(input)
+            .and_then(crate::task_tools::run_cron_delete),
         "CronList" => crate::task_tools::run_cron_list(input.clone()),
-        "LSP" => from_value::<crate::mcp_tools::LspInput>(input).and_then(crate::mcp_tools::run_lsp),
-        "ListMcpResources" => {
-            from_value::<crate::mcp_tools::McpResourceInput>(input).and_then(crate::mcp_tools::run_list_mcp_resources)
+        "LSP" => {
+            from_value::<crate::mcp_tools::LspInput>(input).and_then(crate::mcp_tools::run_lsp)
         }
-        "ReadMcpResource" => from_value::<crate::mcp_tools::McpResourceInput>(input).and_then(crate::mcp_tools::run_read_mcp_resource),
-        "McpAuth" => from_value::<crate::mcp_tools::McpAuthInput>(input).and_then(crate::mcp_tools::run_mcp_auth),
-        "RemoteTrigger" => from_value::<crate::mcp_tools::RemoteTriggerInput>(input).and_then(crate::mcp_tools::run_remote_trigger),
-        "MCP" => from_value::<crate::mcp_tools::McpToolInput>(input).and_then(crate::mcp_tools::run_mcp_tool),
-        "TestingPermission" => {
-            from_value::<crate::mcp_tools::TestingPermissionInput>(input).and_then(crate::mcp_tools::run_testing_permission)
-        }
+        "ListMcpResources" => from_value::<crate::mcp_tools::McpResourceInput>(input)
+            .and_then(crate::mcp_tools::run_list_mcp_resources),
+        "ReadMcpResource" => from_value::<crate::mcp_tools::McpResourceInput>(input)
+            .and_then(crate::mcp_tools::run_read_mcp_resource),
+        "McpAuth" => from_value::<crate::mcp_tools::McpAuthInput>(input)
+            .and_then(crate::mcp_tools::run_mcp_auth),
+        "RemoteTrigger" => from_value::<crate::mcp_tools::RemoteTriggerInput>(input)
+            .and_then(crate::mcp_tools::run_remote_trigger),
+        "MCP" => from_value::<crate::mcp_tools::McpToolInput>(input)
+            .and_then(crate::mcp_tools::run_mcp_tool),
+        "TestingPermission" => from_value::<crate::mcp_tools::TestingPermissionInput>(input)
+            .and_then(crate::mcp_tools::run_testing_permission),
         _ => Err(format!("unsupported tool: {name}")),
     }
 }
@@ -1329,11 +1352,9 @@ pub(crate) fn maybe_enforce_permission_check_with_mode(
     }
 }
 
-
 pub(crate) fn from_value<T: for<'de> Deserialize<'de>>(input: &Value) -> Result<T, String> {
     serde_json::from_value(input.clone()).map_err(|error| error.to_string())
 }
-
 
 fn run_todo_write(input: TodoWriteInput) -> Result<String, String> {
     to_pretty_json(execute_todo_write(input)?)
@@ -1391,7 +1412,6 @@ pub(crate) fn to_pretty_json<T: serde::Serialize>(value: T) -> Result<String, St
 pub(crate) fn io_to_string(error: std::io::Error) -> String {
     error.to_string()
 }
-
 
 #[derive(Debug, Deserialize)]
 struct TodoWriteInput {
@@ -1510,7 +1530,6 @@ struct ReplInput {
     language: String,
     timeout_ms: Option<u64>,
 }
-
 
 #[derive(Debug, Serialize)]
 struct TodoWriteOutput {
@@ -1679,7 +1698,6 @@ struct ReplOutput {
     #[serde(rename = "durationMs")]
     duration_ms: u128,
 }
-
 
 fn execute_todo_write(input: TodoWriteInput) -> Result<TodoWriteOutput, String> {
     validate_todos(&input.todos)?;
@@ -2140,7 +2158,9 @@ fn spawn_agent_job(job: AgentJob) -> Result<(), String> {
 }
 
 fn run_agent_job(job: &AgentJob) -> Result<(), String> {
-    let mut runtime = build_agent_runtime(job)?.with_max_iterations(DEFAULT_AGENT_MAX_ITERATIONS);
+    let mut runtime = build_agent_runtime(job)?
+        .with_max_iterations(DEFAULT_AGENT_MAX_ITERATIONS)
+        .with_staleness_timeout(runtime::DEFAULT_SUBAGENT_STALENESS_TIMEOUT);
     let summary = runtime
         .run_turn(job.prompt.clone(), None)
         .map_err(|error| error.to_string())?;
@@ -3176,6 +3196,7 @@ impl ApiClient for ProviderRuntimeClient {
         for event in events {
             match event {
                 AssistantEvent::TextDelta(text) => content.push_str(&text),
+                AssistantEvent::ReasoningDelta(_) => {}
                 AssistantEvent::Usage(u) => usage = Some(u),
                 _ => {}
             }
@@ -3221,13 +3242,17 @@ async fn stream_with_provider(
                         events.push(AssistantEvent::TextDelta(text));
                     }
                 }
+                ContentBlockDelta::ThinkingDelta { thinking } => {
+                    if !thinking.is_empty() {
+                        events.push(AssistantEvent::ReasoningDelta(thinking));
+                    }
+                }
                 ContentBlockDelta::InputJsonDelta { partial_json } => {
                     if let Some((_, _, input)) = pending_tools.get_mut(&delta.index) {
                         input.push_str(&partial_json);
                     }
                 }
-                ContentBlockDelta::ThinkingDelta { .. }
-                | ContentBlockDelta::SignatureDelta { .. } => {}
+                ContentBlockDelta::SignatureDelta { .. } => {}
             },
             ApiStreamEvent::ContentBlockStop(stop) => {
                 if let Some((id, name, input)) = pending_tools.remove(&stop.index) {
@@ -3249,6 +3274,7 @@ async fn stream_with_provider(
     if !saw_stop
         && events.iter().any(|event| {
             matches!(event, AssistantEvent::TextDelta(text) if !text.is_empty())
+                || matches!(event, AssistantEvent::ReasoningDelta(text) if !text.is_empty())
                 || matches!(event, AssistantEvent::ToolUse { .. })
         })
     {
@@ -3344,6 +3370,12 @@ fn push_output_block(
 fn response_to_events(response: ApiMessageResponse) -> Vec<AssistantEvent> {
     let mut events = Vec::new();
     let mut pending_tools = BTreeMap::new();
+
+    if let Some(reasoning) = response.reasoning_content {
+        if !reasoning.is_empty() {
+            events.push(AssistantEvent::ReasoningDelta(reasoning));
+        }
+    }
 
     for (index, block) in response.content.into_iter().enumerate() {
         let index = u32::try_from(index).expect("response block index overflow");
@@ -4491,15 +4523,15 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    use super::task_tools::run_task_packet;
     use super::{
         agent_permission_policy, allowed_tools_for_subagent, classify_lane_failure,
         derive_agent_state, execute_agent_with_spawn, execute_tool, extract_recovery_outcome,
         final_assistant_text, global_cron_registry, maybe_commit_provenance, mvp_tool_specs,
-        permission_mode_from_plugin, persist_agent_terminal_state, push_output_block,
-        AgentInput, AgentJob, GlobalToolRegistry, LaneFailureClass,
-        ProviderRuntimeClient, SubagentToolExecutor,
+        permission_mode_from_plugin, persist_agent_terminal_state, push_output_block, AgentInput,
+        AgentJob, GlobalToolRegistry, LaneFailureClass, ProviderRuntimeClient,
+        SubagentToolExecutor,
     };
-    use super::task_tools::run_task_packet;
     use api::OutputContentBlock;
     use runtime::LaneEventName;
     use runtime::ProviderFallbackConfig;

@@ -20,8 +20,8 @@ use tools::{mvp_tool_specs, GlobalToolRegistry, RuntimeToolDefinition};
 use super::{
     build_runtime_plugin_state_with_loader, looks_like_slash_command_token,
     normalize_permission_mode, resume_command_can_absorb_token, AllowedToolSet,
-    CLI_OPTION_SUGGESTIONS, DEFAULT_DATE, DEFAULT_MODEL, DEFAULT_OAUTH_CALLBACK_PORT,
-    LATEST_SESSION_REFERENCE, PRIMARY_SESSION_EXTENSION,
+    CLI_OPTION_SUGGESTIONS, CLI_SUBCOMMAND_SUGGESTIONS, DEFAULT_DATE, DEFAULT_MODEL,
+    DEFAULT_OAUTH_CALLBACK_PORT, LATEST_SESSION_REFERENCE, PRIMARY_SESSION_EXTENSION,
 };
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CliAction {
@@ -555,7 +555,10 @@ pub(crate) fn removed_auth_surface_error(command_name: &str) -> String {
     )
 }
 
-pub(crate) fn parse_acp_args(args: &[String], output_format: CliOutputFormat) -> Result<CliAction, String> {
+pub(crate) fn parse_acp_args(
+    args: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
     match args {
         [] => Ok(CliAction::Acp { output_format }),
         [subcommand] if subcommand == "serve" => Ok(CliAction::Acp { output_format }),
@@ -643,9 +646,20 @@ pub(crate) fn parse_direct_slash_cli_action(
                 latest = LATEST_SESSION_REFERENCE,
             )
         }),
-        Ok(None) => Err(format!("unknown subcommand: {}", rest[0])),
+        Ok(None) => Err(format_unknown_subcommand(&rest[0])),
         Err(error) => Err(error.to_string()),
     }
+}
+
+pub(crate) fn format_unknown_subcommand(name: &str) -> String {
+    let mut message = format!("unknown subcommand: {name}");
+    if let Some(suggestion) = suggest_closest_term(name, CLI_SUBCOMMAND_SUGGESTIONS) {
+        message.push_str("\nDid you mean ");
+        message.push_str(suggestion);
+        message.push('?');
+    }
+    message.push_str("\nRun `claw --help` for usage.");
+    message
 }
 
 pub(crate) fn format_unknown_option(option: &str) -> String {
@@ -951,7 +965,10 @@ pub(crate) fn parse_system_prompt_args(
     })
 }
 
-pub(crate) fn parse_export_args(args: &[String], output_format: CliOutputFormat) -> Result<CliAction, String> {
+pub(crate) fn parse_export_args(
+    args: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
     let mut session_reference = LATEST_SESSION_REFERENCE.to_string();
     let mut output_path: Option<PathBuf> = None;
     let mut index = 0;
@@ -1136,7 +1153,10 @@ pub(crate) fn parse_telegram_args(
     })
 }
 
-pub(crate) fn parse_server_args(args: &[String], output_format: CliOutputFormat) -> Result<CliAction, String> {
+pub(crate) fn parse_server_args(
+    args: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
     let mut port: u16 = 8080;
     let mut index = 0;
     while index < args.len() {
@@ -1167,7 +1187,10 @@ pub(crate) fn parse_server_args(args: &[String], output_format: CliOutputFormat)
     })
 }
 
-pub(crate) fn parse_resume_args(args: &[String], output_format: CliOutputFormat) -> Result<CliAction, String> {
+pub(crate) fn parse_resume_args(
+    args: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
     let (session_path, command_tokens): (PathBuf, &[String]) = match args.first() {
         None => (PathBuf::from(LATEST_SESSION_REFERENCE), &[]),
         Some(first) if looks_like_slash_command_token(first) => {

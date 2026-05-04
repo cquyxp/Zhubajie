@@ -40,6 +40,7 @@ fn create_sample_request(message_count: usize) -> MessageRequest {
                         input: json!({"path": format!("/tmp/file{}", i)}),
                     },
                 ],
+                reasoning_content: None,
             }),
             2 => messages.push(InputMessage {
                 role: "user".to_string(),
@@ -50,6 +51,7 @@ fn create_sample_request(message_count: usize) -> MessageRequest {
                     }],
                     is_error: false,
                 }],
+                reasoning_content: None,
             }),
             _ => messages.push(InputMessage {
                 role: "assistant".to_string(),
@@ -58,6 +60,7 @@ fn create_sample_request(message_count: usize) -> MessageRequest {
                     name: "write_file".to_string(),
                     input: json!({"path": format!("/tmp/out{}", i), "content": "data"}),
                 }],
+                reasoning_content: None,
             }),
         }
     }
@@ -111,6 +114,7 @@ fn bench_translate_message(c: &mut Criterion) {
                 input: json!({"path": "/tmp/out", "content": "data"}),
             },
         ],
+        reasoning_content: None,
     };
     group.bench_with_input(
         BenchmarkId::new("assistant_with_tools", "2_tools"),
@@ -130,6 +134,7 @@ fn bench_translate_message(c: &mut Criterion) {
             }],
             is_error: false,
         }],
+        reasoning_content: None,
     };
     group.bench_with_input(
         BenchmarkId::new("tool_result", "single"),

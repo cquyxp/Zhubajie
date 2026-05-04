@@ -674,6 +674,7 @@ fn text_message_response(id: &str, text: &str) -> MessageResponse {
         content: vec![OutputContentBlock::Text {
             text: text.to_string(),
         }],
+        reasoning_content: None,
         model: DEFAULT_MODEL.to_string(),
         stop_reason: Some("end_turn".to_string()),
         stop_sequence: None,
@@ -700,6 +701,7 @@ fn text_message_response_with_usage(
         content: vec![OutputContentBlock::Text {
             text: text.to_string(),
         }],
+        reasoning_content: None,
         model: DEFAULT_MODEL.to_string(),
         stop_reason: Some("end_turn".to_string()),
         stop_sequence: None,
@@ -748,6 +750,7 @@ fn tool_message_response_many(id: &str, tool_uses: &[ToolUseMessage<'_>]) -> Mes
                 input: tool_use.input.clone(),
             })
             .collect(),
+        reasoning_content: None,
         model: DEFAULT_MODEL.to_string(),
         stop_reason: Some("tool_use".to_string()),
         stop_sequence: None,

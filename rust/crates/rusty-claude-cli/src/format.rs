@@ -48,17 +48,20 @@ impl GitWorkspaceSummary {
 pub(crate) fn format_model_report(model: &str, message_count: usize, turns: u32) -> String {
     format!(
         "Model
-  Current model    {model}
-  Session messages {message_count}
-  Session turns    {turns}
+  Current          {model}
+  Session          {message_count} messages · {turns} turns
 
 Usage
-  Inspect current model with /model
+  Inspect the active model with /model
   Switch models with /model <name>"
     )
 }
 
-pub(crate) fn format_model_switch_report(previous: &str, next: &str, message_count: usize) -> String {
+pub(crate) fn format_model_switch_report(
+    previous: &str,
+    next: &str,
+    message_count: usize,
+) -> String {
     format!(
         "Model updated
   Previous         {previous}
@@ -98,14 +101,14 @@ pub(crate) fn format_permissions_report(mode: &str) -> String {
 
     format!(
         "Permissions
-  Active mode      {mode}
-  Mode status      live session default
+  Current mode     {mode}
+  Scope            live session default
 
 Modes
 {modes}
 
 Usage
-  Inspect current mode with /permissions
+  Inspect the active mode with /permissions
   Switch modes with /permissions <mode>"
     )
 }
@@ -113,10 +116,10 @@ Usage
 pub(crate) fn format_permissions_switch_report(previous: &str, next: &str) -> String {
     format!(
         "Permissions updated
-  Result           mode switched
+        Result           mode switched
   Previous mode    {previous}
   Active mode      {next}
-  Applies to       subsequent tool calls
+  Scope            subsequent tool calls
   Usage            /permissions to inspect current mode"
     )
 }
@@ -141,8 +144,7 @@ pub(crate) fn format_resume_report(session_path: &str, message_count: usize, tur
     format!(
         "Session resumed
   Session file     {session_path}
-  Messages         {message_count}
-  Turns            {turns}"
+  Transcript       {message_count} messages · {turns} turns"
     )
 }
 
@@ -155,7 +157,11 @@ pub(crate) fn render_resume_usage() -> String {
     )
 }
 
-pub(crate) fn format_compact_report(removed: usize, resulting_messages: usize, skipped: bool) -> String {
+pub(crate) fn format_compact_report(
+    removed: usize,
+    resulting_messages: usize,
+    skipped: bool,
+) -> String {
     if skipped {
         format!(
             "Compact
@@ -167,7 +173,7 @@ pub(crate) fn format_compact_report(removed: usize, resulting_messages: usize, s
         format!(
             "Compact
   Result           compacted
-  Messages removed {removed}
+  Removed          {removed}
   Messages kept    {resulting_messages}"
         )
     }

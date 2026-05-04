@@ -83,6 +83,7 @@ async fn send_message_blocks_oversized_xai_requests_before_the_http_call() {
                 content: vec![InputContentBlock::Text {
                     text: "x".repeat(300_000),
                 }],
+                reasoning_content: None,
             }],
             system: Some("Keep the answer short.".to_string()),
             tools: None,
@@ -484,6 +485,7 @@ fn sample_request(stream: bool) -> MessageRequest {
             content: vec![InputContentBlock::Text {
                 text: "Say hello".to_string(),
             }],
+            reasoning_content: None,
         }],
         system: Some("Use tools when needed".to_string()),
         tools: Some(vec![ToolDefinition {

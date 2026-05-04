@@ -45,6 +45,8 @@ impl MessageRequest {
 pub struct InputMessage {
     pub role: String,
     pub content: Vec<InputContentBlock>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 impl InputMessage {
@@ -53,6 +55,7 @@ impl InputMessage {
         Self {
             role: "user".to_string(),
             content: vec![InputContentBlock::Text { text: text.into() }],
+            reasoning_content: None,
         }
     }
 
@@ -71,6 +74,7 @@ impl InputMessage {
                 }],
                 is_error,
             }],
+            reasoning_content: None,
         }
     }
 }
@@ -101,6 +105,29 @@ pub enum ToolResultContentBlock {
     Json { value: Value },
 }
 
+/// Anthropic prompt-caching marker.
+///
+/// ```json
+/// {"cache_control": {"type": "ephemeral"}}
+/// ```
+///
+/// Applied to system-prompt entries, tool definitions, and the last user
+/// message's text block so the API can reuse cached results across turns.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CacheControl {
+    #[serde(rename = "type")]
+    pub kind: String,
+}
+
+impl CacheControl {
+    #[must_use]
+    pub fn ephemeral() -> Self {
+        Self {
+            kind: "ephemeral".to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolDefinition {
     pub name: String,
@@ -124,6 +151,8 @@ pub struct MessageResponse {
     pub kind: String,
     pub role: String,
     pub content: Vec<OutputContentBlock>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
     pub model: String,
     #[serde(default)]
     pub stop_reason: Option<String>,
@@ -291,6 +320,7 @@ mod tests {
             kind: "message".to_string(),
             role: "assistant".to_string(),
             content: Vec::new(),
+            reasoning_content: None,
             model: "claude-sonnet-4-20250514".to_string(),
             stop_reason: Some("end_turn".to_string()),
             stop_sequence: None,

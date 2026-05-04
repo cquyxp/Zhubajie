@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
+use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value};
 use telemetry::SessionTracer;
@@ -18,6 +19,7 @@ use crate::usage::{TokenUsage, UsageTracker};
 
 const DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD: u32 = 100_000;
 const AUTO_COMPACTION_THRESHOLD_ENV_VAR: &str = "CLAUDE_CODE_AUTO_COMPACT_INPUT_TOKENS";
+pub const DEFAULT_SUBAGENT_STALENESS_TIMEOUT: Duration = Duration::from_secs(600); // 10 minutes
 
 /// Fully assembled request payload sent to the upstream model client.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +32,7 @@ pub struct ApiRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AssistantEvent {
     TextDelta(String),
+    ReasoningDelta(String),
     ToolUse {
         id: String,
         name: String,
@@ -153,6 +156,10 @@ pub struct ConversationRuntime<C, T> {
     hook_abort_signal: HookAbortSignal,
     hook_progress_reporter: Option<Box<dyn HookProgressReporter>>,
     session_tracer: Option<SessionTracer>,
+    /// Optional wall-clock deadline for the entire turn loop.
+    /// Used by sub-agents to fail fast after a staleness timeout (10 minutes)
+    /// instead of hanging silently on a stalled API call.
+    staleness_deadline: Option<Instant>,
 }
 
 impl<C, T> ConversationRuntime<C, T>
@@ -202,12 +209,22 @@ where
             hook_abort_signal: HookAbortSignal::default(),
             hook_progress_reporter: None,
             session_tracer: None,
+            staleness_deadline: None,
         }
     }
 
     #[must_use]
     pub fn with_max_iterations(mut self, max_iterations: usize) -> Self {
         self.max_iterations = max_iterations;
+        self
+    }
+
+    /// Set a wall-clock deadline for the turn loop.
+    /// When exceeded, `run_turn` returns `RuntimeError::SubagentStalled` instead
+    /// of silently hanging. Used by sub-agents (default 10-minute timeout).
+    #[must_use]
+    pub fn with_staleness_timeout(mut self, timeout: Duration) -> Self {
+        self.staleness_deadline = Some(Instant::now() + timeout);
         self
     }
 
@@ -364,6 +381,20 @@ where
                 );
                 self.record_turn_failed(iterations, &error);
                 return Err(error);
+            }
+
+            // Sub-agent staleness guard: fail fast with a clear error instead
+            // of hanging silently when the model stops responding mid-turn.
+            if let Some(deadline) = self.staleness_deadline {
+                if Instant::now() >= deadline {
+                    let error = RuntimeError::new(format!(
+                        "sub-agent stalled mid-stream and timed out — \
+                         the upstream model did not respond within the \
+                         sub-agent timeout (10 minutes)"
+                    ));
+                    self.record_turn_failed(iterations, &error);
+                    return Err(error);
+                }
             }
 
             let request = ApiRequest {
@@ -607,12 +638,39 @@ where
         self.session
     }
 
+    fn run_pre_compact_hook(&mut self) {
+        if let Some(reporter) = self.hook_progress_reporter.as_mut() {
+            let _ = self
+                .hook_runner
+                .run_pre_compact(Some(&self.hook_abort_signal), Some(reporter.as_mut()));
+        } else {
+            let _ = self
+                .hook_runner
+                .run_pre_compact(Some(&self.hook_abort_signal), None);
+        }
+    }
+
+    fn run_post_compact_hook(&mut self) {
+        if let Some(reporter) = self.hook_progress_reporter.as_mut() {
+            let _ = self
+                .hook_runner
+                .run_post_compact(Some(&self.hook_abort_signal), Some(reporter.as_mut()));
+        } else {
+            let _ = self
+                .hook_runner
+                .run_post_compact(Some(&self.hook_abort_signal), None);
+        }
+    }
+
     fn maybe_auto_compact(&mut self) -> Option<AutoCompactionEvent> {
         if self.usage_tracker.cumulative_usage().input_tokens
             < self.auto_compaction_input_tokens_threshold
         {
             return None;
         }
+
+        // Fire PreCompact hook before compaction
+        self.run_pre_compact_hook();
 
         // Auto-compact always uses heuristic for speed and cost
         let result = compact_session_legacy(
@@ -628,6 +686,10 @@ where
         }
 
         self.session = result.compacted_session;
+
+        // Fire PostCompact hook after compaction
+        self.run_post_compact_hook();
+
         Some(AutoCompactionEvent {
             removed_message_count: result.removed_message_count,
             compaction_mode: CompactionMode::Heuristic,
@@ -772,6 +834,7 @@ fn build_assistant_message(
     RuntimeError,
 > {
     let mut text = String::new();
+    let mut reasoning_content = String::new();
     let mut blocks = Vec::new();
     let mut prompt_cache_events = Vec::new();
     let mut finished = false;
@@ -780,6 +843,7 @@ fn build_assistant_message(
     for event in events {
         match event {
             AssistantEvent::TextDelta(delta) => text.push_str(&delta),
+            AssistantEvent::ReasoningDelta(delta) => reasoning_content.push_str(&delta),
             AssistantEvent::ToolUse { id, name, input } => {
                 flush_text_block(&mut text, &mut blocks);
                 blocks.push(ContentBlock::ToolUse { id, name, input });
@@ -799,12 +863,17 @@ fn build_assistant_message(
             "assistant stream ended without a message stop event",
         ));
     }
-    if blocks.is_empty() {
+    if blocks.is_empty() && reasoning_content.is_empty() {
         return Err(RuntimeError::new("assistant stream produced no content"));
     }
 
     Ok((
-        ConversationMessage::assistant_with_usage(blocks, usage),
+        ConversationMessage {
+            role: crate::session::MessageRole::Assistant,
+            blocks,
+            reasoning_content: (!reasoning_content.is_empty()).then_some(reasoning_content),
+            usage,
+        },
         usage,
         prompt_cache_events,
     ))
@@ -1148,6 +1217,8 @@ mod tests {
                 vec![shell_snippet("printf 'blocked by hook'; exit 2")],
                 Vec::new(),
                 Vec::new(),
+                Vec::new(),
+                Vec::new(),
             )),
         );
 
@@ -1209,6 +1280,8 @@ mod tests {
             vec!["system".to_string()],
             &RuntimeFeatureConfig::default().with_hooks(RuntimeHookConfig::new(
                 vec![shell_snippet("printf 'broken hook'; exit 1")],
+                Vec::new(),
+                Vec::new(),
                 Vec::new(),
                 Vec::new(),
             )),
@@ -1279,6 +1352,8 @@ mod tests {
             &RuntimeFeatureConfig::default().with_hooks(RuntimeHookConfig::new(
                 vec![shell_snippet("printf 'pre hook ran'")],
                 vec![shell_snippet("printf 'post hook ran'")],
+                Vec::new(),
+                Vec::new(),
                 Vec::new(),
             )),
         );
@@ -1357,6 +1432,8 @@ mod tests {
                 Vec::new(),
                 vec![shell_snippet("printf 'post hook should not run'")],
                 vec![shell_snippet("printf 'failure hook ran'")],
+                Vec::new(),
+                Vec::new(),
             )),
         );
 
@@ -1781,6 +1858,23 @@ mod tests {
         assert!(error
             .to_string()
             .contains("assistant stream produced no content"));
+    }
+
+    #[test]
+    fn build_assistant_message_allows_reasoning_only_messages() {
+        let events = vec![
+            AssistantEvent::ReasoningDelta("step 1".to_string()),
+            AssistantEvent::MessageStop,
+        ];
+
+        let (message, usage, prompt_cache_events) =
+            build_assistant_message(events).expect("reasoning-only messages should be preserved");
+
+        assert_eq!(message.role, crate::session::MessageRole::Assistant);
+        assert!(message.blocks.is_empty());
+        assert_eq!(message.reasoning_content.as_deref(), Some("step 1"));
+        assert!(usage.is_none());
+        assert!(prompt_cache_events.is_empty());
     }
 
     #[test]

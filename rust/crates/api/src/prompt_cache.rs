@@ -720,6 +720,7 @@ mod tests {
             content: vec![OutputContentBlock::Text {
                 text: text.to_string(),
             }],
+            reasoning_content: None,
             model: "claude-3-7-sonnet-latest".to_string(),
             stop_reason: Some("end_turn".to_string()),
             stop_sequence: None,

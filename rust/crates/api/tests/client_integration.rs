@@ -122,6 +122,7 @@ async fn send_message_blocks_oversized_requests_before_the_http_call() {
                 content: vec![InputContentBlock::Text {
                     text: "x".repeat(600_000),
                 }],
+                reasoning_content: None,
             }],
             system: Some("Keep the answer short.".to_string()),
             tools: None,
@@ -910,6 +911,7 @@ fn sample_request(stream: bool) -> MessageRequest {
                     is_error: false,
                 },
             ],
+            reasoning_content: None,
         }],
         system: Some("Use tools when needed".to_string()),
         tools: Some(vec![ToolDefinition {

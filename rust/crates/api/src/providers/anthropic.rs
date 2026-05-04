@@ -16,11 +16,11 @@ use crate::error::ApiError;
 use crate::http_client::build_http_client_or_default;
 use crate::prompt_cache::{PromptCache, PromptCacheRecord, PromptCacheStats};
 
-use super::{
-    anthropic_missing_credentials, model_token_limit, resolve_model_alias,
-};
+use super::{anthropic_missing_credentials, model_token_limit, resolve_model_alias};
 use crate::sse::SseParser;
-use crate::types::{MessageDeltaEvent, MessageRequest, MessageResponse, StreamEvent, Usage};
+use crate::types::{
+    CacheControl, MessageDeltaEvent, MessageRequest, MessageResponse, StreamEvent, Usage,
+};
 
 pub const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 const REQUEST_ID_HEADER: &str = "request-id";
@@ -469,7 +469,9 @@ impl AnthropicClient {
     ) -> Result<reqwest::Response, ApiError> {
         let request_url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
         let mut request_body = self.request_profile.render_json_body(request)?;
+        strip_unsupported_message_fields(&mut request_body);
         strip_unsupported_beta_body_fields(&mut request_body);
+        add_prompt_caching_markers(&mut request_body);
         let request_builder = self.build_request(&request_url).json(&request_body);
         request_builder.send().await.map_err(ApiError::from)
     }
@@ -519,6 +521,20 @@ impl AnthropicClient {
         Ok(())
     }
 
+    /// Verify the API connection by counting tokens on a minimal message.
+    /// Succeeds if credentials are valid and the endpoint is reachable.
+    pub async fn check_connection(&self) -> Result<(), ApiError> {
+        let minimal = crate::types::MessageRequest {
+            model: "claude-sonnet-4-6".to_string(),
+            max_tokens: 1,
+            messages: vec![crate::types::InputMessage::user_text("hi")],
+            stream: false,
+            ..Default::default()
+        };
+        self.count_tokens(&minimal).await?;
+        Ok(())
+    }
+
     async fn count_tokens(&self, request: &MessageRequest) -> Result<u32, ApiError> {
         #[derive(serde::Deserialize)]
         struct CountTokensResponse {
@@ -530,7 +546,9 @@ impl AnthropicClient {
             self.base_url.trim_end_matches('/')
         );
         let mut request_body = self.request_profile.render_json_body(request)?;
+        strip_unsupported_message_fields(&mut request_body);
         strip_unsupported_beta_body_fields(&mut request_body);
+        add_prompt_caching_markers(&mut request_body);
         let response = self
             .build_request(&request_url)
             .json(&request_body)
@@ -964,6 +982,88 @@ fn enrich_bearer_auth_error(error: ApiError, auth: &AuthSource) -> ApiError {
 /// `/v1/messages/count_tokens` endpoints reject as `Extra inputs are not
 /// permitted`. The `betas` opt-in is communicated via the `anthropic-beta`
 /// HTTP header on these endpoints, never as a JSON body field.
+/// Add `cache_control: {"type": "ephemeral"}` markers for Anthropic prompt
+/// caching.  Operates on the serialized JSON body so it does not require
+/// type-level changes to [`MessageRequest`] or any of its construction
+/// sites (which also serve OpenAI-compatible providers that do not support
+/// prompt caching).
+///
+/// Three places get markers:
+///
+/// 1. **System prompt** — serialized as a string; must become an array of
+///    one text block with `cache_control`.
+/// 2. **Tool definitions** — each tool gets `cache_control` since the tool
+///    list is stable for the duration of a session.
+/// 3. **Last user message** — the final text block in the last user turn
+///    gets `cache_control`, enabling cross-turn cache hits on conversation
+///    history.
+fn add_prompt_caching_markers(body: &mut Value) {
+    // 1. System prompt: string → [{type: "text", text: ..., cache_control: ...}]
+    let system_moved = body.get("system").and_then(|v| {
+        if let Some(s) = v.as_str() {
+            if s.is_empty() {
+                None
+            } else {
+                Some(s.to_string())
+            }
+        } else {
+            None
+        }
+    });
+    if let Some(system_text) = system_moved {
+        body["system"] = serde_json::json!([{
+            "type": "text",
+            "text": system_text,
+            "cache_control": cache_control_value()
+        }]);
+    }
+
+    // 2. Tool definitions.
+    if let Some(tools) = body.get_mut("tools") {
+        if let Some(arr) = tools.as_array_mut() {
+            for tool in arr.iter_mut() {
+                if let Some(obj) = tool.as_object_mut() {
+                    obj.insert("cache_control".to_string(), cache_control_value());
+                }
+            }
+        }
+    }
+
+    // 3. Last user message — add cache_control to its final text block.
+    if let Some(messages) = body.get_mut("messages") {
+        if let Some(arr) = messages.as_array_mut() {
+            if let Some(last_user) = arr
+                .iter_mut()
+                .rev()
+                .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
+            {
+                if let Some(content) = last_user.get_mut("content") {
+                    if let Some(blocks) = content.as_array_mut() {
+                        // Find indices of all text blocks so we only mark
+                        // the final one (cache_control on intermediate
+                        // blocks has no added benefit).
+                        let text_indices: Vec<usize> = blocks
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, b)| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+                            .map(|(i, _)| i)
+                            .collect();
+                        if let Some(&last_idx) = text_indices.last() {
+                            if let Some(obj) = blocks[last_idx].as_object_mut() {
+                                obj.insert("cache_control".to_string(), cache_control_value());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn cache_control_value() -> Value {
+    serde_json::to_value(CacheControl::ephemeral()).expect("CacheControl should serialize to JSON")
+}
+
 fn strip_unsupported_beta_body_fields(body: &mut Value) {
     if let Some(object) = body.as_object_mut() {
         object.remove("betas");
@@ -975,6 +1075,20 @@ fn strip_unsupported_beta_body_fields(body: &mut Value) {
             if stop_val.as_array().is_some_and(|a| !a.is_empty()) {
                 object.insert("stop_sequences".to_string(), stop_val);
             }
+        }
+    }
+}
+
+fn strip_unsupported_message_fields(body: &mut Value) {
+    let Some(messages) = body.get_mut("messages") else {
+        return;
+    };
+    let Some(messages) = messages.as_array_mut() else {
+        return;
+    };
+    for message in messages {
+        if let Some(object) = message.as_object_mut() {
+            object.remove("reasoning_content");
         }
     }
 }
@@ -1695,5 +1809,95 @@ mod tests {
             enriched,
             crate::error::ApiError::InvalidSseFrame(_)
         ));
+    }
+
+    #[test]
+    fn add_prompt_caching_markers_transforms_system_to_array() {
+        let mut body = serde_json::json!({
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 64,
+            "system": "You are a helpful assistant.",
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
+        });
+
+        super::add_prompt_caching_markers(&mut body);
+
+        let system = body.get("system").expect("system should exist");
+        assert!(system.is_array(), "system should become an array: {system}");
+        let arr = system.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["type"], "text");
+        assert_eq!(arr[0]["text"], "You are a helpful assistant.");
+        assert_eq!(arr[0]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn add_prompt_caching_markers_adds_to_tools() {
+        let mut body = serde_json::json!({
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 64,
+            "system": "You are a helpful assistant.",
+            "tools": [
+                {"name": "bash", "description": "Run a shell command", "input_schema": {"type": "object"}},
+                {"name": "read", "description": "Read a file", "input_schema": {"type": "object"}}
+            ],
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
+        });
+
+        super::add_prompt_caching_markers(&mut body);
+
+        let tools = body["tools"].as_array().unwrap();
+        for (i, tool) in tools.iter().enumerate() {
+            assert_eq!(
+                tool["cache_control"]["type"], "ephemeral",
+                "tool[{i}] should have cache_control"
+            );
+        }
+    }
+
+    #[test]
+    fn add_prompt_caching_markers_marks_last_user_text_block() {
+        let mut body = serde_json::json!({
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 64,
+            "system": "You are a helpful assistant.",
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "first turn"}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "second turn"},
+                    {"type": "tool_result", "content": "42"}
+                ]}
+            ]
+        });
+
+        super::add_prompt_caching_markers(&mut body);
+
+        let messages = body["messages"].as_array().unwrap();
+        let last_user = messages.last().unwrap();
+        let blocks = last_user["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["cache_control"]["type"], "ephemeral");
+        assert!(
+            blocks[1].get("cache_control").is_none(),
+            "tool_result should not get cache_control"
+        );
+    }
+
+    #[test]
+    fn add_prompt_caching_markers_is_noop_when_system_is_absent() {
+        let mut body = serde_json::json!({
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 64,
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
+        });
+
+        super::add_prompt_caching_markers(&mut body);
+
+        // System key should not be added if it wasn't present.
+        assert!(body.get("system").is_none());
+        // Last user message does get cache_control though.
+        let last_user = body["messages"][0].as_object().unwrap();
+        let blocks = last_user["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["cache_control"]["type"], "ephemeral");
     }
 }

@@ -1,9 +1,9 @@
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
+use crate::to_pretty_json;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
-use crate::to_pretty_json;
 
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn run_web_fetch(input: WebFetchInput) -> Result<String, String> {
@@ -200,8 +200,36 @@ fn html_to_text(html: &str) -> String {
     let mut text = String::with_capacity(html.len());
     let mut in_tag = false;
     let mut previous_was_space = false;
+    let mut skip_until_close = None; // track </style> or </script>
 
-    for ch in html.chars() {
+    for (i, ch) in html.char_indices() {
+        // Check if entering a <style> or <script> block.
+        if ch == '<' && skip_until_close.is_none() {
+            let rest = &html[i..];
+            if rest.len() >= 7 {
+                let lower_start = rest[..7].to_ascii_lowercase();
+                if lower_start.starts_with("<style") {
+                    skip_until_close = Some("</style>");
+                    continue;
+                }
+                if lower_start.starts_with("<script") {
+                    skip_until_close = Some("</script>");
+                    continue;
+                }
+            }
+        }
+
+        // Check if exiting a <style> or <script> block.
+        if let Some(close_tag) = skip_until_close {
+            let rest = &html[i..];
+            if rest.len() >= close_tag.len()
+                && rest[..close_tag.len()].to_ascii_lowercase() == close_tag
+            {
+                skip_until_close = None;
+            }
+            continue;
+        }
+
         match ch {
             '<' => in_tag = true,
             '>' => in_tag = false,
@@ -443,4 +471,3 @@ struct SearchHit {
     title: String,
     url: String,
 }
-

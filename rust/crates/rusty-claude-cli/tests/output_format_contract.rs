@@ -227,7 +227,7 @@ fn doctor_and_resume_status_emit_json_when_requested() {
     assert!(summary["failures"].as_u64().is_some());
 
     let checks = doctor["checks"].as_array().expect("doctor checks");
-    assert_eq!(checks.len(), 6);
+    assert_eq!(checks.len(), 11);
     let check_names = checks
         .iter()
         .map(|check| {
@@ -241,11 +241,16 @@ fn doctor_and_resume_status_emit_json_when_requested() {
         check_names,
         vec![
             "auth",
+            "provider connection",
             "config",
             "install source",
             "workspace",
+            "branch freshness",
             "sandbox",
-            "system"
+            "plugins & mcp",
+            "trust config",
+            "external configs",
+            "system",
         ]
     );
 

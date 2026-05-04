@@ -59,10 +59,7 @@ impl DynamicProviderRegistry {
     /// Priority: exact match > longest prefix match > built-in metadata > fallback detection.
     /// Returns (provider_kind, provider_metadata) if a routing rule matches.
     #[must_use]
-    pub fn resolve_provider(
-        &self,
-        model: &str,
-    ) -> Option<(ProviderKind, ProviderMetadata)> {
+    pub fn resolve_provider(&self, model: &str) -> Option<(ProviderKind, ProviderMetadata)> {
         // 1) Exact match (highest priority)
         if let Some(provider_id) = self.routing.exact.get(model) {
             return self.get_provider(provider_id);
@@ -80,17 +77,17 @@ impl DynamicProviderRegistry {
         None
     }
 
-    fn get_provider(
-        &self,
-        provider_id: &str,
-    ) -> Option<(ProviderKind, ProviderMetadata)> {
+    fn get_provider(&self, provider_id: &str) -> Option<(ProviderKind, ProviderMetadata)> {
         use ProviderKind::*;
         // Built-in provider IDs
         match provider_id {
             "anthropic" => Some((ProviderKind::Anthropic, ProviderKind::Anthropic.metadata())),
             "openai" => Some((ProviderKind::OpenAi, ProviderKind::OpenAi.metadata())),
             "xai" => Some((ProviderKind::Xai, ProviderKind::Xai.metadata())),
-            "openrouter" => Some((ProviderKind::OpenRouter, ProviderKind::OpenRouter.metadata())),
+            "openrouter" => Some((
+                ProviderKind::OpenRouter,
+                ProviderKind::OpenRouter.metadata(),
+            )),
             _ => self.custom_providers.get(provider_id).map(|config| {
                 let kind = Custom(provider_id.to_string());
                 (
@@ -192,12 +189,7 @@ impl ProviderKind {
                 "OPENAI_BASE_URL",
                 crate::providers::openai_compat::DEFAULT_OPENROUTER_BASE_URL,
             ),
-            Custom(_) => ProviderMetadata::new(
-                "custom",
-                "",
-                "",
-                "",
-            ),
+            Custom(_) => ProviderMetadata::new("custom", "", "", ""),
         }
     }
 }
@@ -236,8 +228,14 @@ mod tests {
 
     #[test]
     fn test_resolve_builtin_alias() {
-        assert_eq!(resolve_builtin_alias("opus"), Some("claude-opus-4-6".into()));
-        assert_eq!(resolve_builtin_alias("SONNET"), Some("claude-sonnet-4-6".into()));
+        assert_eq!(
+            resolve_builtin_alias("opus"),
+            Some("claude-opus-4-6".into())
+        );
+        assert_eq!(
+            resolve_builtin_alias("SONNET"),
+            Some("claude-sonnet-4-6".into())
+        );
         assert_eq!(resolve_builtin_alias("unknown"), None);
     }
 
@@ -264,8 +262,14 @@ mod tests {
     #[test]
     fn test_routing_exact_overrides_prefix() {
         let mut config = ModelConfig::default();
-        config.routing.exact.insert("qwen2.5".into(), "exact-provider".into());
-        config.routing.prefix.insert("qwen".into(), "prefix-provider".into());
+        config
+            .routing
+            .exact
+            .insert("qwen2.5".into(), "exact-provider".into());
+        config
+            .routing
+            .prefix
+            .insert("qwen".into(), "prefix-provider".into());
         let reg = DynamicProviderRegistry::new(&config);
         // resolve_provider returns Some only if provider exists in config
         // Since we don't have these providers defined, it returns None.

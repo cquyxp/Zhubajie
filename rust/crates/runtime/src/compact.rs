@@ -615,6 +615,7 @@ fn compact_session_heuristic(session: &Session, config: CompactionConfig) -> Com
     let mut compacted_messages = vec![ConversationMessage {
         role: MessageRole::System,
         blocks: vec![ContentBlock::Text { text: continuation }],
+        reasoning_content: None,
         usage: None,
     }];
     compacted_messages.extend(preserved);
@@ -756,6 +757,7 @@ fn compact_session_llm_or_fallback(
     let mut compacted_messages = vec![ConversationMessage {
         role: MessageRole::System,
         blocks: vec![ContentBlock::Text { text: continuation }],
+        reasoning_content: None,
         usage: None,
     }];
     compacted_messages.extend(preserved_messages);
@@ -820,6 +822,7 @@ mod tests {
                 blocks: vec![ContentBlock::Text {
                     text: "recent".to_string(),
                 }],
+                reasoning_content: None,
                 usage: None,
             },
         ];
@@ -932,6 +935,7 @@ mod tests {
                 blocks: vec![ContentBlock::Text {
                     text: get_compact_continuation_message(summary, true, true),
                 }],
+                reasoning_content: None,
                 usage: None,
             },
             ConversationMessage::user_text("tiny"),

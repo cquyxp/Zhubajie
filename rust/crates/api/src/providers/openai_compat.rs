@@ -20,6 +20,7 @@ pub const DEFAULT_XAI_BASE_URL: &str = "https://api.x.ai/v1";
 pub const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 pub const DEFAULT_DASHSCOPE_BASE_URL: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 pub const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
+pub const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/v1";
 const REQUEST_ID_HEADER: &str = "request-id";
 const ALT_REQUEST_ID_HEADER: &str = "x-request-id";
 const DEFAULT_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
@@ -42,11 +43,13 @@ pub struct OpenAiCompatConfig {
 const XAI_ENV_VARS: &[&str] = &["XAI_API_KEY"];
 const OPENAI_ENV_VARS: &[&str] = &["OPENAI_API_KEY"];
 const DASHSCOPE_ENV_VARS: &[&str] = &["DASHSCOPE_API_KEY"];
+const DEEPSEEK_ENV_VARS: &[&str] = &["DEEPSEEK_API_KEY"];
 
 // Provider-specific request body size limits in bytes
 const XAI_MAX_REQUEST_BODY_BYTES: usize = 52_428_800; // 50MB
 const OPENAI_MAX_REQUEST_BODY_BYTES: usize = 104_857_600; // 100MB
 const DASHSCOPE_MAX_REQUEST_BODY_BYTES: usize = 6_291_456; // 6MB (observed limit in dogfood)
+const DEEPSEEK_MAX_REQUEST_BODY_BYTES: usize = 52_428_800; // 50MB
 
 impl OpenAiCompatConfig {
     #[must_use]
@@ -86,12 +89,26 @@ impl OpenAiCompatConfig {
         }
     }
 
+    /// DeepSeek API (V4 models: deepseek-v4-flash, deepseek-v4-pro).
+    /// Uses the OpenAI-compatible wire format at api.deepseek.com/v1.
+    #[must_use]
+    pub const fn deepseek() -> Self {
+        Self {
+            provider_name: "DeepSeek",
+            api_key_env: "DEEPSEEK_API_KEY",
+            base_url_env: "DEEPSEEK_BASE_URL",
+            default_base_url: DEFAULT_DEEPSEEK_BASE_URL,
+            max_request_body_bytes: DEEPSEEK_MAX_REQUEST_BODY_BYTES,
+        }
+    }
+
     #[must_use]
     pub fn credential_env_vars(self) -> &'static [&'static str] {
         match self.provider_name {
             "xAI" => XAI_ENV_VARS,
             "OpenAI" => OPENAI_ENV_VARS,
             "DashScope" => DASHSCOPE_ENV_VARS,
+            "DeepSeek" => DEEPSEEK_ENV_VARS,
             _ => &[],
         }
     }
@@ -157,6 +174,35 @@ impl OpenAiCompatClient {
         self.initial_backoff = initial_backoff;
         self.max_backoff = max_backoff;
         self
+    }
+
+    /// Verify the API connection by issuing GET /models.
+    /// This is a free, read-only endpoint on every OpenAI-compatible provider.
+    pub async fn check_connection(&self) -> Result<(), ApiError> {
+        let models_url = format!("{}/models", self.base_url.trim_end_matches('/'));
+        let response = self
+            .http
+            .get(&models_url)
+            .bearer_auth(&self.api_key)
+            .send()
+            .await
+            .map_err(ApiError::from)?;
+
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            Err(ApiError::Api {
+                status,
+                error_type: None,
+                message: Some(body.clone()),
+                request_id: None,
+                body,
+                retryable: false,
+                suggested_action: None,
+            })
+        }
     }
 
     pub async fn send_message(
@@ -452,6 +498,7 @@ impl StreamState {
                     kind: "message".to_string(),
                     role: "assistant".to_string(),
                     content: Vec::new(),
+                    reasoning_content: None,
                     model: chunk.model.clone().unwrap_or_else(|| self.model.clone()),
                     stop_reason: None,
                     stop_sequence: None,
@@ -476,7 +523,13 @@ impl StreamState {
         }
 
         for choice in chunk.choices {
-            if let Some(content) = choice.delta.content.filter(|value| !value.is_empty()) {
+            // DeepSeek emits reasoning_content (thinking/CoT) as a separate
+            // field in the delta alongside content. Keep it distinct so the
+            // runtime can persist and replay it as reasoning_content instead
+            // of flattening it into visible assistant text.
+            let reasoning = choice.delta.reasoning_content.filter(|v| !v.is_empty());
+            let content = choice.delta.content.filter(|value| !value.is_empty());
+            if content.is_some() {
                 if !self.text_started {
                     self.text_started = true;
                     events.push(StreamEvent::ContentBlockStart(ContentBlockStartEvent {
@@ -486,9 +539,17 @@ impl StreamState {
                         },
                     }));
                 }
+            }
+            if let Some(text) = reasoning {
                 events.push(StreamEvent::ContentBlockDelta(ContentBlockDeltaEvent {
                     index: 0,
-                    delta: ContentBlockDelta::TextDelta { text: content },
+                    delta: ContentBlockDelta::ThinkingDelta { thinking: text },
+                }));
+            }
+            if let Some(text) = content {
+                events.push(StreamEvent::ContentBlockDelta(ContentBlockDeltaEvent {
+                    index: 0,
+                    delta: ContentBlockDelta::TextDelta { text },
                 }));
             }
 
@@ -672,6 +733,10 @@ struct ChatMessage {
     role: String,
     #[serde(default)]
     content: Option<String>,
+    /// DeepSeek-specific reasoning/thinking content in non-streaming responses.
+    /// Preserved separately so it can be replayed without polluting visible text.
+    #[serde(default)]
+    reasoning_content: Option<String>,
     #[serde(default)]
     tool_calls: Vec<ResponseToolCall>,
 }
@@ -718,6 +783,12 @@ struct ChunkChoice {
 struct ChunkDelta {
     #[serde(default)]
     content: Option<String>,
+    /// DeepSeek-specific reasoning/thinking content.
+    /// When present, this field contains the model's chain-of-thought text.
+    /// DeepSeek requires this content to be included in subsequent request
+    /// assistant messages, so we merge it into the regular text stream.
+    #[serde(default)]
+    reasoning_content: Option<String>,
     #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
     tool_calls: Vec<DeltaToolCall>,
 }
@@ -755,22 +826,25 @@ struct ErrorBody {
 /// Returns true for models known to reject tuning parameters like temperature,
 /// `top_p`, `frequency_penalty`, and `presence_penalty`. These are typically
 /// reasoning/chain-of-thought models with fixed sampling.
-/// Returns true for models known to reject tuning parameters like temperature,
-/// `top_p`, `frequency_penalty`, and `presence_penalty`. These are typically
-/// reasoning/chain-of-thought models with fixed sampling.
-/// Public for benchmarking and testing purposes.
+///
+/// Delegates to the centralized [`super::model_capabilities`] when the model
+/// is registered, falling back to the original prefix heuristics for unknown
+/// model names. Public for benchmarking and testing purposes.
 #[must_use]
 pub fn is_reasoning_model(model: &str) -> bool {
+    let caps = super::model_capabilities(model);
+    if caps.is_reasoning_default {
+        return true;
+    }
+
+    // Fallback: unknown models may still be reasoning — apply the original
+    // prefix heuristics so the behaviour is identical to before.
     let lowered = model.to_ascii_lowercase();
-    // Strip any provider/ prefix for the check (e.g. qwen/qwen-qwq -> qwen-qwq)
     let canonical = lowered.rsplit('/').next().unwrap_or(lowered.as_str());
-    // OpenAI reasoning models
     canonical.starts_with("o1")
         || canonical.starts_with("o3")
         || canonical.starts_with("o4")
-        // xAI reasoning: grok-3-mini always uses reasoning mode
         || canonical == "grok-3-mini"
-        // Alibaba DashScope reasoning variants (QwQ + Qwen3-Thinking family)
         || canonical.starts_with("qwen-qwq")
         || canonical.starts_with("qwq")
         || canonical.contains("thinking")
@@ -901,9 +975,22 @@ pub fn build_chat_completion_request(
             payload["stop"] = json!(stop);
         }
     }
-    // reasoning_effort for OpenAI-compatible reasoning models (o4-mini, o3, etc.)
+    // reasoning_effort / thinking budget.
+    // OpenAI o-series uses `reasoning_effort`; DeepSeek V4 uses `thinking`.
+    // Both control how many tokens the model spends on chain-of-thought.
     if let Some(effort) = &request.reasoning_effort {
-        payload["reasoning_effort"] = json!(effort);
+        if wire_model.to_ascii_lowercase().starts_with("deepseek") {
+            // DeepSeek V4 thinking schema: {"type":"enabled","budget_tokens":N}
+            // Map effort levels to reasonable token budgets.
+            let budget = match effort.as_str() {
+                "low" => 2_000,
+                "high" => 16_000,
+                _ => 8_000, // medium / default
+            };
+            payload["thinking"] = json!({"type": "enabled", "budget_tokens": budget});
+        } else {
+            payload["reasoning_effort"] = json!(effort);
+        }
     }
 
     payload
@@ -911,15 +998,20 @@ pub fn build_chat_completion_request(
 
 /// Returns true for models that do NOT support the `is_error` field in tool results.
 /// kimi models (via Moonshot AI/Dashscope) reject this field with 400 Bad Request.
-/// Returns true for models that do NOT support the `is_error` field in tool results.
-/// kimi models (via Moonshot AI/Dashscope) reject this field with 400 Bad Request.
+///
+/// Delegates to the centralized [`super::model_capabilities`] when the model
+/// is registered, falling back to the original prefix heuristic when it is not.
 /// Public for benchmarking and testing purposes.
 #[must_use]
 pub fn model_rejects_is_error_field(model: &str) -> bool {
+    let caps = super::model_capabilities(model);
+    if caps.rejects_is_error_field {
+        return true;
+    }
+
+    // Fallback: unknown kimi-prefixed models also reject is_error.
     let lowered = model.to_ascii_lowercase();
-    // Strip any provider/ prefix for the check
     let canonical = lowered.rsplit('/').next().unwrap_or(lowered.as_str());
-    // kimi models (kimi-k2.5, kimi-k1.5, kimi-moonshot, etc.)
     canonical.starts_with("kimi")
 }
 
@@ -928,6 +1020,10 @@ pub fn model_rejects_is_error_field(model: &str) -> bool {
 #[must_use]
 pub fn translate_message(message: &InputMessage, model: &str) -> Vec<Value> {
     let supports_is_error = !model_rejects_is_error_field(model);
+    // DeepSeek models require reasoning_content to be echoed back in
+    // assistant messages when the model previously responded in thinking
+    // mode. Check the wire model name to decide whether to include it.
+    let is_deepseek = model.to_ascii_lowercase().starts_with("deepseek");
     match message.role.as_str() {
         "assistant" => {
             let mut text = String::new();
@@ -946,17 +1042,25 @@ pub fn translate_message(message: &InputMessage, model: &str) -> Vec<Value> {
                     InputContentBlock::ToolResult { .. } => {}
                 }
             }
-            if text.is_empty() && tool_calls.is_empty() {
+            let reasoning = message.reasoning_content.as_ref().filter(|v| !v.is_empty());
+            if text.is_empty() && tool_calls.is_empty() && reasoning.is_none() {
                 Vec::new()
             } else {
                 let mut msg = serde_json::json!({
                     "role": "assistant",
-                    "content": (!text.is_empty()).then_some(text),
+                    "content": (!text.is_empty()).then_some(text.clone()),
                 });
                 // Only include tool_calls when non-empty: some providers reject
                 // assistant messages with an explicit empty tool_calls array.
                 if !tool_calls.is_empty() {
                     msg["tool_calls"] = json!(tool_calls);
+                }
+                // DeepSeek: include reasoning_content so the API doesn't reject
+                // with "reasoning_content must be passed back" (400 error).
+                if is_deepseek {
+                    if let Some(reasoning) = reasoning {
+                        msg["reasoning_content"] = json!(reasoning);
+                    }
                 }
                 vec![msg]
             }
@@ -1165,7 +1269,11 @@ fn normalize_response(
             "chat completion response missing choices",
         ))?;
     let mut content = Vec::new();
-    if let Some(text) = choice.message.content.filter(|value| !value.is_empty()) {
+    // Preserve DeepSeek reasoning_content separately so it can be replayed
+    // back to the provider without being flattened into user-visible text.
+    let reasoning = choice.message.reasoning_content.filter(|v| !v.is_empty());
+    let text = choice.message.content.filter(|v| !v.is_empty());
+    if let Some(text) = text {
         content.push(OutputContentBlock::Text { text });
     }
     for tool_call in choice.message.tool_calls {
@@ -1181,6 +1289,7 @@ fn normalize_response(
         kind: "message".to_string(),
         role: choice.message.role,
         content,
+        reasoning_content: reasoning,
         model: response.model.if_empty_then(model.to_string()),
         stop_reason: choice
             .finish_reason
@@ -1427,6 +1536,7 @@ mod tests {
                             is_error: false,
                         },
                     ],
+                    reasoning_content: None,
                 }],
                 system: Some("be helpful".to_string()),
                 tools: Some(vec![ToolDefinition {
@@ -1791,6 +1901,7 @@ mod tests {
                 content: vec![InputContentBlock::Text {
                     text: "Hello".to_string(),
                 }],
+                reasoning_content: None,
             }],
             stream: false,
             ..Default::default()
@@ -1823,6 +1934,7 @@ mod tests {
                     name: "read_file".to_string(),
                     input: serde_json::json!({"path": "/tmp/test"}),
                 }],
+                reasoning_content: None,
             }],
             stream: false,
             ..Default::default()
@@ -1942,6 +2054,7 @@ mod tests {
                 }],
                 is_error: true,
             }],
+            reasoning_content: None,
         };
 
         let translated = super::translate_message(&message, "gpt-4o");
@@ -1966,6 +2079,7 @@ mod tests {
                 }],
                 is_error: false,
             }],
+            reasoning_content: None,
         };
 
         let translated2 = super::translate_message(&message2, "grok-3");
@@ -1997,6 +2111,7 @@ mod tests {
                 }],
                 is_error: true,
             }],
+            reasoning_content: None,
         };
 
         let translated = super::translate_message(&message, "kimi-k2.5");
@@ -2026,6 +2141,64 @@ mod tests {
     }
 
     #[test]
+    fn translate_message_replays_reasoning_content_separately_for_deepseek() {
+        use crate::types::{InputContentBlock, InputMessage};
+
+        let message = InputMessage {
+            role: "assistant".to_string(),
+            content: vec![InputContentBlock::Text {
+                text: "Visible answer".to_string(),
+            }],
+            reasoning_content: Some("Private reasoning".to_string()),
+        };
+
+        let translated = super::translate_message(&message, "deepseek-v4-pro");
+        assert_eq!(translated.len(), 1);
+        let assistant_msg = &translated[0];
+        assert_eq!(assistant_msg["role"], json!("assistant"));
+        assert_eq!(assistant_msg["content"], json!("Visible answer"));
+        assert_eq!(
+            assistant_msg["reasoning_content"],
+            json!("Private reasoning")
+        );
+    }
+
+    #[test]
+    fn normalize_response_preserves_reasoning_content_separately() {
+        let response: super::ChatCompletionResponse = serde_json::from_value(json!({
+            "id": "chatcmpl_test",
+            "model": "deepseek-v4-pro",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "Visible answer",
+                    "reasoning_content": "Private reasoning",
+                    "tool_calls": []
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 4
+            }
+        }))
+        .expect("chat completion response should deserialize");
+
+        let normalized = super::normalize_response("deepseek-v4-pro", response)
+            .expect("normalization should succeed");
+
+        assert_eq!(
+            normalized.reasoning_content.as_deref(),
+            Some("Private reasoning")
+        );
+        assert_eq!(normalized.content.len(), 1);
+        assert!(matches!(
+            normalized.content[0],
+            crate::types::OutputContentBlock::Text { ref text } if text == "Visible answer"
+        ));
+    }
+
+    #[test]
     fn build_chat_completion_request_kimi_vs_non_kimi_tool_results() {
         use crate::types::{InputContentBlock, InputMessage, ToolResultContentBlock};
 
@@ -2041,6 +2214,7 @@ mod tests {
                         name: "read_file".to_string(),
                         input: serde_json::json!({"path": "/tmp/test"}),
                     }],
+                    reasoning_content: None,
                 },
                 InputMessage {
                     role: "user".to_string(),
@@ -2051,6 +2225,7 @@ mod tests {
                         }],
                         is_error: false,
                     }],
+                    reasoning_content: None,
                 },
             ],
             stream: false,

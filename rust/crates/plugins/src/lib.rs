@@ -72,6 +72,10 @@ pub struct PluginHooks {
     pub post_tool_use: Vec<String>,
     #[serde(rename = "PostToolUseFailure", default)]
     pub post_tool_use_failure: Vec<String>,
+    #[serde(rename = "PreCompact", default)]
+    pub pre_compact: Vec<String>,
+    #[serde(rename = "PostCompact", default)]
+    pub post_compact: Vec<String>,
 }
 
 impl PluginHooks {
@@ -80,6 +84,8 @@ impl PluginHooks {
         self.pre_tool_use.is_empty()
             && self.post_tool_use.is_empty()
             && self.post_tool_use_failure.is_empty()
+            && self.pre_compact.is_empty()
+            && self.post_compact.is_empty()
     }
 
     #[must_use]
@@ -94,6 +100,10 @@ impl PluginHooks {
         merged
             .post_tool_use_failure
             .extend(other.post_tool_use_failure.iter().cloned());
+        merged.pre_compact.extend(other.pre_compact.iter().cloned());
+        merged
+            .post_compact
+            .extend(other.post_compact.iter().cloned());
         merged
     }
 }
@@ -1951,6 +1961,16 @@ fn resolve_hooks(root: &Path, hooks: &PluginHooks) -> PluginHooks {
             .collect(),
         post_tool_use_failure: hooks
             .post_tool_use_failure
+            .iter()
+            .map(|entry| resolve_hook_entry(root, entry))
+            .collect(),
+        pre_compact: hooks
+            .pre_compact
+            .iter()
+            .map(|entry| resolve_hook_entry(root, entry))
+            .collect(),
+        post_compact: hooks
+            .post_compact
             .iter()
             .map(|entry| resolve_hook_entry(root, entry))
             .collect(),

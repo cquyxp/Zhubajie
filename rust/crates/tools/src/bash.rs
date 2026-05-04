@@ -3,8 +3,8 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use runtime::{
-    check_freshness, execute_bash, BashCommandInput, BashCommandOutput, BranchFreshness,
-    LaneEvent, LaneEventName, LaneEventStatus, LaneFailureClass, PermissionMode,
+    check_freshness, execute_bash, BashCommandInput, BashCommandOutput, BranchFreshness, LaneEvent,
+    LaneEventName, LaneEventStatus, LaneFailureClass, PermissionMode,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -483,4 +483,3 @@ fn execute_shell_command(
         sandbox_status: None,
     })
 }
-

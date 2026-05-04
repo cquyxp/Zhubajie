@@ -32,12 +32,16 @@ impl ProviderClient {
                 OpenAiCompatConfig::xai(),
             )?)),
             ProviderKind::OpenAi => {
-                // DashScope models (qwen-*) also return ProviderKind::OpenAi because they
-                // speak the OpenAI wire format, but they need the DashScope config which
-                // reads DASHSCOPE_API_KEY and points at dashscope.aliyuncs.com.
+                // DashScope models (qwen-*) and DeepSeek models also return
+                // ProviderKind::OpenAi because they speak the OpenAI wire
+                // format, but they need their own config which reads the
+                // correct env var and points at the correct base URL.
                 let config = match providers::metadata_for_model(&resolved_model) {
                     Some(meta) if meta.auth_env == "DASHSCOPE_API_KEY" => {
                         OpenAiCompatConfig::dashscope()
+                    }
+                    Some(meta) if meta.auth_env == "DEEPSEEK_API_KEY" => {
+                        OpenAiCompatConfig::deepseek()
                     }
                     _ => OpenAiCompatConfig::openai(),
                 };
@@ -76,6 +80,14 @@ impl ProviderClient {
         match self {
             Self::Anthropic(client) => client.take_last_prompt_cache_record(),
             Self::Xai(_) | Self::OpenAi(_) => None,
+        }
+    }
+
+    /// Verify the API connection is functional with a lightweight probe.
+    pub async fn check_connection(&self) -> Result<(), ApiError> {
+        match self {
+            Self::Anthropic(client) => client.check_connection().await,
+            Self::Xai(client) | Self::OpenAi(client) => client.check_connection().await,
         }
     }
 
@@ -233,6 +245,36 @@ mod tests {
                 );
             }
             other => panic!("Expected ProviderClient::OpenAi for qwen-plus, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deepseek_model_uses_deepseek_config() {
+        let _lock = env_lock();
+        let _deepseek = EnvVarGuard::set("DEEPSEEK_API_KEY", Some("test-deepseek-key"));
+        let _openai = EnvVarGuard::set("OPENAI_API_KEY", None);
+
+        let client = ProviderClient::from_model("deepseek-v4-flash");
+
+        // Must succeed (not fail with "missing OPENAI_API_KEY")
+        assert!(
+            client.is_ok(),
+            "deepseek-v4-flash with DEEPSEEK_API_KEY set should build successfully, got: {:?}",
+            client.err()
+        );
+
+        // Verify it's the OpenAi variant pointed at the DeepSeek base URL.
+        match client.unwrap() {
+            ProviderClient::OpenAi(openai_client) => {
+                assert!(
+                    openai_client.base_url().contains("api.deepseek.com"),
+                    "deepseek-v4-flash should route to DeepSeek base URL (contains 'api.deepseek.com'), got: {}",
+                    openai_client.base_url()
+                );
+            }
+            other => {
+                panic!("Expected ProviderClient::OpenAi for deepseek-v4-flash, got: {other:?}")
+            }
         }
     }
 }

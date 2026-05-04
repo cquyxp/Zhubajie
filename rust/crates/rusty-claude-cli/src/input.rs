@@ -3,6 +3,10 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::io::{self, IsTerminal, Write};
 
+use crossterm::cursor;
+use crossterm::execute;
+use crossterm::style::Print;
+use crossterm::terminal::{self, Clear, ClearType};
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
 use rustyline::highlight::{CmdKind, Highlighter};
@@ -11,6 +15,7 @@ use rustyline::history::DefaultHistory;
 use rustyline::validate::Validator;
 use rustyline::{
     Cmd, CompletionType, Config, Context, EditMode, Editor, Helper, KeyCode, KeyEvent, Modifiers,
+    Movement, Word,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,8 +103,12 @@ impl Highlighter for SlashCommandHelper {
 impl Validator for SlashCommandHelper {}
 impl Helper for SlashCommandHelper {}
 
+/// Sentinel character inserted by Ctrl+O to toggle verbose output mode.
+pub const CTRL_O_SENTINEL: char = '\x0f';
+
 pub struct LineEditor {
     prompt: String,
+    status_line: Option<String>,
     editor: Editor<SlashCommandHelper, DefaultHistory>,
 }
 
@@ -109,15 +118,52 @@ impl LineEditor {
         let config = Config::builder()
             .completion_type(CompletionType::List)
             .edit_mode(EditMode::Emacs)
+            .bracketed_paste(true)
             .build();
         let mut editor = Editor::<SlashCommandHelper, DefaultHistory>::with_config(config)
             .expect("rustyline editor should initialize");
         editor.set_helper(Some(SlashCommandHelper::new(completions)));
         editor.bind_sequence(KeyEvent(KeyCode::Char('J'), Modifiers::CTRL), Cmd::Newline);
         editor.bind_sequence(KeyEvent(KeyCode::Enter, Modifiers::SHIFT), Cmd::Newline);
+        // Ctrl+U clears the entire input buffer (upstream: kill-whole-line),
+        // and Ctrl+Y restores it (yank). Ctrl+L forces a full redraw.
+        editor.bind_sequence(
+            KeyEvent(KeyCode::Char('U'), Modifiers::CTRL),
+            Cmd::Kill(Movement::WholeLine),
+        );
+        editor.bind_sequence(
+            KeyEvent(KeyCode::Char('L'), Modifiers::CTRL),
+            Cmd::ClearScreen,
+        );
+        // Ctrl+A/E jump to start/end of line (Emacs default, explicit for
+        // visibility). Ctrl+W deletes the previous word. Ctrl+Backspace
+        // (Windows-compatible) also deletes the previous word.
+        editor.bind_sequence(
+            KeyEvent(KeyCode::Char('A'), Modifiers::CTRL),
+            Cmd::Move(Movement::BeginningOfLine),
+        );
+        editor.bind_sequence(
+            KeyEvent(KeyCode::Char('E'), Modifiers::CTRL),
+            Cmd::Move(Movement::EndOfLine),
+        );
+        editor.bind_sequence(
+            KeyEvent(KeyCode::Char('W'), Modifiers::CTRL),
+            Cmd::Kill(Movement::BackwardWord(1, Word::Emacs)),
+        );
+        editor.bind_sequence(
+            KeyEvent(KeyCode::Backspace, Modifiers::CTRL),
+            Cmd::Kill(Movement::BackwardWord(1, Word::Emacs)),
+        );
+        // Ctrl+O toggles verbose output mode. Insert a sentinel that the
+        // REPL loop detects before processing the line.
+        editor.bind_sequence(
+            KeyEvent(KeyCode::Char('O'), Modifiers::CTRL),
+            Cmd::SelfInsert(1, CTRL_O_SENTINEL),
+        );
 
         Self {
             prompt: prompt.into(),
+            status_line: None,
             editor,
         }
     }
@@ -137,6 +183,10 @@ impl LineEditor {
         }
     }
 
+    pub fn set_status_line(&mut self, status_line: impl Into<String>) {
+        self.status_line = Some(status_line.into());
+    }
+
     pub fn read_line(&mut self) -> io::Result<ReadOutcome> {
         if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
             return self.read_line_fallback();
@@ -146,7 +196,9 @@ impl LineEditor {
             helper.reset_current_line();
         }
 
-        match self.editor.readline(&self.prompt) {
+        self.prepare_fixed_status_line()?;
+
+        let result = match self.editor.readline(&self.prompt) {
             Ok(line) => Ok(ReadOutcome::Submit(line)),
             Err(ReadlineError::Interrupted) => {
                 let has_input = !self.current_line().is_empty();
@@ -162,7 +214,10 @@ impl LineEditor {
                 Ok(ReadOutcome::Exit)
             }
             Err(error) => Err(io::Error::other(error)),
-        }
+        };
+
+        self.clear_fixed_status_line()?;
+        result
     }
 
     fn current_line(&self) -> String {
@@ -177,6 +232,49 @@ impl LineEditor {
         }
         let mut stdout = io::stdout();
         writeln!(stdout)
+    }
+
+    fn prepare_fixed_status_line(&self) -> io::Result<()> {
+        let Some(status_line) = &self.status_line else {
+            return Ok(());
+        };
+        let (width, height) = match terminal::size() {
+            Ok(size) if size.1 >= 2 => size,
+            _ => return Ok(()),
+        };
+        let footer_row = height.saturating_sub(1);
+        let input_row = height.saturating_sub(2);
+        let rendered_status = truncate_status_line(status_line, usize::from(width));
+        let mut stdout = io::stdout();
+
+        execute!(
+            stdout,
+            cursor::MoveTo(0, footer_row),
+            Clear(ClearType::CurrentLine),
+            Print(rendered_status),
+            cursor::MoveTo(0, input_row),
+            Clear(ClearType::CurrentLine)
+        )?;
+        stdout.flush()
+    }
+
+    fn clear_fixed_status_line(&self) -> io::Result<()> {
+        if self.status_line.is_none() {
+            return Ok(());
+        }
+        let (_, height) = match terminal::size() {
+            Ok(size) if size.1 >= 2 => size,
+            _ => return Ok(()),
+        };
+        let footer_row = height.saturating_sub(1);
+        let mut stdout = io::stdout();
+
+        execute!(
+            stdout,
+            cursor::MoveTo(0, footer_row),
+            Clear(ClearType::CurrentLine)
+        )?;
+        stdout.flush()
     }
 
     fn read_line_fallback(&self) -> io::Result<ReadOutcome> {
@@ -195,6 +293,28 @@ impl LineEditor {
         }
         Ok(ReadOutcome::Submit(buffer))
     }
+}
+
+fn truncate_status_line(status_line: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+
+    let visible = status_line.chars().count();
+    if visible <= width {
+        return status_line.to_string();
+    }
+
+    if width <= 3 {
+        return ".".repeat(width);
+    }
+
+    let mut truncated = status_line
+        .chars()
+        .take(width.saturating_sub(3))
+        .collect::<String>();
+    truncated.push_str("...");
+    truncated
 }
 
 fn slash_command_prefix(line: &str, pos: usize) -> Option<&str> {
@@ -221,7 +341,7 @@ fn normalize_completions(completions: Vec<String>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{slash_command_prefix, LineEditor, SlashCommandHelper};
+    use super::{slash_command_prefix, truncate_status_line, LineEditor, SlashCommandHelper};
     use rustyline::completion::Completer;
     use rustyline::highlight::Highlighter;
     use rustyline::history::{DefaultHistory, History};
@@ -326,5 +446,13 @@ mod tests {
 
         let helper = editor.editor.helper().expect("helper should exist");
         assert_eq!(helper.completions, vec!["/model opus".to_string()]);
+    }
+
+    #[test]
+    fn truncates_status_line_to_terminal_width() {
+        assert_eq!(truncate_status_line("abcdef", 0), "");
+        assert_eq!(truncate_status_line("abcdef", 2), "..");
+        assert_eq!(truncate_status_line("abcdef", 4), "a...");
+        assert_eq!(truncate_status_line("abc", 4), "abc");
     }
 }

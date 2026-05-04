@@ -142,6 +142,8 @@ impl PermissionEnforcer {
     }
 
     /// Check if a bash command should be allowed based on current mode.
+    /// Read-only commands with glob patterns (e.g. `ls *.ts`) and read-only
+    /// commands behind a `cd` prefix are treated as safe and skip the prompt.
     pub fn check_bash(&self, command: &str) -> EnforcementResult {
         let mode = self.policy.active_mode();
 
@@ -161,12 +163,27 @@ impl PermissionEnforcer {
                     }
                 }
             }
-            PermissionMode::Prompt => EnforcementResult::Denied {
-                tool: "bash".to_owned(),
-                active_mode: mode.as_str().to_owned(),
-                required_mode: PermissionMode::DangerFullAccess.as_str().to_owned(),
-                reason: "bash requires confirmation in prompt mode".to_owned(),
-            },
+            PermissionMode::Prompt => {
+                // Auto-approve read-only commands that use glob patterns
+                // (e.g. `ls *.ts`, `grep foo **/*.rs`) or start with a
+                // `cd` into the project directory followed by a read-only
+                // command (e.g. `cd "$(git rev-parse --show-toplevel)" && git log`).
+                let had_cd = command.trim().starts_with("cd ");
+                let normalized = strip_cd_prefix(command);
+                let is_read_only =
+                    is_read_only_command(normalized) && !has_dangerous_git_subcommand(normalized);
+                let has_glob = contains_glob_pattern(normalized);
+                if is_read_only && (has_glob || had_cd) {
+                    EnforcementResult::Allowed
+                } else {
+                    EnforcementResult::Denied {
+                        tool: "bash".to_owned(),
+                        active_mode: mode.as_str().to_owned(),
+                        required_mode: PermissionMode::DangerFullAccess.as_str().to_owned(),
+                        reason: "bash requires confirmation in prompt mode".to_owned(),
+                    }
+                }
+            }
             // WorkspaceWrite, Allow, DangerFullAccess: permit bash
             _ => EnforcementResult::Allowed,
         }
@@ -190,9 +207,58 @@ fn is_within_workspace(path: &str, workspace_root: &str) -> bool {
     normalized.starts_with(&root) || normalized == workspace_root.trim_end_matches('/')
 }
 
+/// Env vars considered safe when prefixed before read-only commands.
+/// `LANG=C ls` is fine; `SECRET_TOKEN=x cat /etc/shadow` is not.
+const SAFE_ENV_VARS: &[&str] = &[
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LC_MESSAGES",
+    "TZ",
+    "NO_COLOR",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "TERM",
+    "PATH",
+    "DISPLAY",
+    "EDITOR",
+    "PAGER",
+    "SHELL",
+    "PWD",
+    "OLDPWD",
+];
+
 /// Conservative heuristic: is this bash command read-only?
 fn is_read_only_command(command: &str) -> bool {
-    let first_token = command
+    // #31: Backslash-escaped first token conceals the real command.
+    let first_token = command.split_whitespace().next().unwrap_or("");
+    if first_token.starts_with('\\') {
+        return false;
+    }
+
+    // #37: Bash /dev/tcp and /dev/udp virtual filesystem redirects
+    // allow network connections and are never read-only.
+    if command.contains("/dev/tcp/") || command.contains("/dev/udp/") {
+        return false;
+    }
+
+    // #38: For compound commands (&&, ;), every segment must be
+    // read-only for the whole to be safe.
+    let segments: Vec<&str> = command
+        .split("&&")
+        .flat_map(|s| s.split(';'))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    if segments.len() > 1 {
+        return segments.iter().all(|s| is_read_only_command(s));
+    }
+
+    // #32: Strip safe env-var prefixes (KEY=value) from the command.
+    // Unsafe env vars block auto-approval.
+    let stripped = strip_env_prefixes(command);
+    let first = stripped
         .split_whitespace()
         .next()
         .unwrap_or("")
@@ -201,74 +267,181 @@ fn is_read_only_command(command: &str) -> bool {
         .unwrap_or("");
 
     matches!(
-        first_token,
-        "cat"
-            | "head"
-            | "tail"
-            | "less"
-            | "more"
-            | "wc"
-            | "ls"
-            | "find"
-            | "grep"
-            | "rg"
-            | "awk"
-            | "sed"
-            | "echo"
-            | "printf"
-            | "which"
-            | "where"
-            | "whoami"
-            | "pwd"
-            | "env"
-            | "printenv"
-            | "date"
-            | "cal"
-            | "df"
-            | "du"
-            | "free"
-            | "uptime"
-            | "uname"
-            | "file"
-            | "stat"
-            | "diff"
-            | "sort"
-            | "uniq"
-            | "tr"
-            | "cut"
-            | "paste"
-            | "tee"
-            | "xargs"
-            | "test"
-            | "true"
-            | "false"
-            | "type"
-            | "readlink"
-            | "realpath"
-            | "basename"
-            | "dirname"
-            | "sha256sum"
-            | "md5sum"
-            | "b3sum"
-            | "xxd"
-            | "hexdump"
-            | "od"
-            | "strings"
-            | "tree"
-            | "jq"
-            | "yq"
-            | "python3"
-            | "python"
-            | "node"
-            | "ruby"
-            | "cargo"
-            | "rustc"
-            | "git"
-            | "gh"
+        first,
+        "cat" | "head" | "tail" | "less" | "more" | "wc" | "ls"
+            | "find" | "grep" | "rg" | "awk" | "sed" | "echo" | "printf"
+            | "which" | "where" | "whoami" | "pwd" | "env" | "printenv"
+            | "date" | "cal" | "df" | "du" | "free" | "uptime" | "uname"
+            | "file" | "stat" | "diff" | "sort" | "uniq" | "tr" | "cut"
+            | "paste" | "tee" | "xargs" | "test" | "true" | "false" | "type"
+            | "readlink" | "realpath" | "basename" | "dirname"
+            | "sha256sum" | "md5sum" | "b3sum" | "xxd" | "hexdump" | "od"
+            | "strings" | "tree" | "jq" | "yq" | "python3" | "python"
+            | "node" | "ruby" | "cargo" | "rustc" | "git" | "gh"
+            // 2.1.72: additional read-only commands
+            | "lsof" | "pgrep" | "tput" | "ss" | "fd" | "fdfind"
+            // 2.1.71: more read-only utilities
+            | "fmt" | "comm" | "cmp" | "numfmt" | "expr" | "seq" | "tsort"
+            | "pr" | "getconf"
+            // 2.1.72: common CLI tools
+            | "go" | "rustup" | "npm" | "yarn" | "pnpm" | "deno" | "bun"
     ) && !command.contains("-i ")
         && !command.contains("--in-place")
         && !command.contains(" > ")
         && !command.contains(" >> ")
+        // #34: grep -f / rg -f reads a pattern file — if it points outside
+        // the workspace we can't verify safety. Treat as non-read-only.
+        && !(first == "grep" && command_has_external_file_arg(command, "-f"))
+        && !(first == "rg" && command_has_external_file_arg(command, "-f"))
+}
+
+/// Strip known-safe `KEY=value` env-var prefixes from a command so that
+/// `LANG=C ls` resolves to `ls`. If the command contains an unsafe env-var
+/// prefix the function returns a sentinel that will not match any read-only
+/// token, forcing the command to require a prompt.
+fn strip_env_prefixes(command: &str) -> String {
+    let mut remainder = command.trim();
+    loop {
+        let (token, rest) = match remainder.split_once(char::is_whitespace) {
+            Some(pair) => pair,
+            None => return remainder.to_string(),
+        };
+        // Only strip KEY=value tokens where KEY is a known-safe env var.
+        if let Some(eq_pos) = token.find('=') {
+            let key = &token[..eq_pos];
+            if SAFE_ENV_VARS.contains(&key) {
+                remainder = rest.trim_start();
+                continue;
+            }
+            // Unsafe env var — return a sentinel that won't match any
+            // read-only command name.
+            return "\0unsafe-env".to_string();
+        }
+        // Not an env-var assignment — stop stripping.
+        return remainder.to_string();
+    }
+}
+
+/// Returns `true` when a command has a flag argument that references a file
+/// outside the workspace (or an absolute path we can't verify).
+fn command_has_external_file_arg(command: &str, flag: &str) -> bool {
+    let tokens: Vec<&str> = command.split_whitespace().collect();
+    for i in 0..tokens.len().saturating_sub(1) {
+        if tokens[i] == flag {
+            if let Some(path) = tokens.get(i + 1) {
+                if path.starts_with('/') || path.starts_with("~/") {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Returns `true` when a git subcommand is not clearly read-only.
+/// `git status` / `git log` are fine; `git push` / `git commit -m "msg"` are not.
+fn has_dangerous_git_subcommand(command: &str) -> bool {
+    let tokens: Vec<&str> = command.split_whitespace().collect();
+    if tokens.len() < 2 {
+        return false;
+    }
+    let bin = tokens[0].rsplit('/').next().unwrap_or(tokens[0]);
+    if bin != "git" && bin != "gh" {
+        return false;
+    }
+    // Known write subcommands that should always require permission.
+    matches!(
+        tokens[1],
+        "push"
+            | "commit"
+            | "add"
+            | "rm"
+            | "mv"
+            | "reset"
+            | "rebase"
+            | "merge"
+            | "cherry-pick"
+            | "revert"
+            | "tag"
+            | "branch"
+            | "checkout"
+            | "switch"
+            | "restore"
+            | "stash"
+            | "clean"
+            | "gc"
+            | "prune"
+            | "filter-branch"
+            | "filter-repo"
+            | "worktree"
+            | "submodule"
+            | "am"
+            | "apply"
+            | "format-patch"
+            | "send-email"
+            | "lfs"
+            | "clone"
+            | "init"
+            | "bisect"
+            | "notes"
+            | "replace"
+            | "request-pull"
+            | "pr"
+            | "release"
+            | "repo"
+            | "gist"
+            | "run"
+            | "workflow"
+    )
+}
+
+/// Returns `true` when a command contains shell glob-like patterns.
+/// Simple heuristic: checks for unquoted `*`, `?`, `[...]`, or `{...}`.
+fn contains_glob_pattern(command: &str) -> bool {
+    let bytes = command.as_bytes();
+    let mut in_single = false;
+    let mut in_double = false;
+    for (i, &ch) in bytes.iter().enumerate() {
+        if ch == b'\'' && !in_double {
+            in_single = !in_single;
+        } else if ch == b'"' && !in_single {
+            in_double = !in_double;
+        } else if !in_single && !in_double {
+            if ch == b'*' || ch == b'?' {
+                return true;
+            }
+            if ch == b'[' && bytes.get(i + 1).is_some_and(|&c| c != b' ') {
+                // Simple [ bracket check (not foolproof but useful)
+                return bytes[i + 1..]
+                    .iter()
+                    .take_while(|&&c| c != b'\n')
+                    .any(|&c| c == b']');
+            }
+        }
+    }
+    false
+}
+
+/// Strip a leading `cd <path> &&` or `cd <path> ;` prefix from a command.
+/// `cd` into the current workspace directory is a no-op for permission purposes;
+/// the real trigger is the command after the `&&`.
+fn strip_cd_prefix(command: &str) -> &str {
+    let trimmed = command.trim();
+    // Match: cd <path> && (or cd <path>;)
+    if let Some(rest) = trimmed.strip_prefix("cd ") {
+        // Find where the cd argument ends and the separator appears
+        for sep in ["&&", ";"] {
+            if let Some(idx) = rest.find(sep) {
+                if idx > 0 {
+                    let after = rest[idx + sep.len()..].trim();
+                    if !after.is_empty() {
+                        return after;
+                    }
+                }
+            }
+        }
+    }
+    trimmed
 }
 
 #[cfg(test)]

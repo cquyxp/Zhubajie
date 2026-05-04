@@ -3,7 +3,7 @@ use std::io::{self, Write};
 
 use crossterm::cursor::{MoveToColumn, RestorePosition, SavePosition};
 use crossterm::style::{Color, Print, ResetColor, SetForegroundColor, Stylize};
-use crossterm::terminal::{Clear, ClearType};
+use crossterm::terminal::{size, Clear, ClearType};
 use crossterm::{execute, queue};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use syntect::easy::HighlightLines;
@@ -180,9 +180,9 @@ impl RenderState {
 
         if let Some(level) = self.heading_level {
             style = match level {
-                1 => style.with(theme.heading),
-                2 => style.white(),
-                3 => style.with(Color::Blue),
+                1 => style.bold().underlined().with(theme.heading),
+                2 => style.bold().with(theme.heading),
+                3 => style.bold().with(Color::Blue),
                 _ => style.with(Color::Grey),
             };
         } else if self.strong > 0 {
@@ -287,7 +287,7 @@ impl TerminalRenderer {
     ) {
         match event {
             Event::Start(Tag::Heading { level, .. }) => {
-                Self::start_heading(state, level as u8, output);
+                self.start_heading(state, level as u8, output);
             }
             Event::End(TagEnd::Paragraph) => output.push_str("\n\n"),
             Event::Start(Tag::BlockQuote(..)) => self.start_quote(state, output),
@@ -300,7 +300,11 @@ impl TerminalRenderer {
                 output.push_str("\n\n");
             }
             Event::End(TagEnd::Item) | Event::SoftBreak | Event::HardBreak => {
-                state.append_raw(output, "\n");
+                if state.quote > 0 {
+                    state.append_raw(output, &format!("\n{}", self.quote_prefix(state.quote)));
+                } else {
+                    state.append_raw(output, "\n");
+                }
             }
             Event::Start(Tag::List(first_item)) => {
                 let kind = match first_item {
@@ -373,7 +377,8 @@ impl TerminalRenderer {
                             .underlined()
                             .with(self.color_theme.link)
                     );
-                    state.append_raw(output, &rendered);
+                    let hyperlinked = osc8_hyperlink(&rendered, &link.destination);
+                    state.append_raw(output, &hyperlinked);
                 }
             }
             Event::Start(Tag::Image { dest_url, .. }) => {
@@ -427,16 +432,20 @@ impl TerminalRenderer {
         }
     }
 
-    fn start_heading(state: &mut RenderState, level: u8, output: &mut String) {
+    fn start_heading(&self, state: &mut RenderState, level: u8, output: &mut String) {
         state.heading_level = Some(level);
         if !output.is_empty() {
             output.push('\n');
         }
+        output.push_str(&self.heading_prefix(level));
     }
 
     fn start_quote(&self, state: &mut RenderState, output: &mut String) {
         state.quote += 1;
-        let _ = write!(output, "{}", "│ ".with(self.color_theme.quote));
+        if !output.is_empty() && !output.ends_with('\n') {
+            output.push('\n');
+        }
+        let _ = write!(output, "{}", self.quote_prefix(state.quote));
     }
 
     fn start_item(state: &mut RenderState, output: &mut String) {
@@ -449,23 +458,27 @@ impl TerminalRenderer {
                 *next_index += 1;
                 format!("{value}. ")
             }
-            _ => "• ".to_string(),
+            _ if depth == 0 => "• ".to_string(),
+            _ => "◦ ".to_string(),
         };
         output.push_str(&marker);
     }
 
     fn start_code_block(&self, code_language: &str, output: &mut String) {
         let label = if code_language.is_empty() {
-            "code".to_string()
+            "code"
         } else {
-            code_language.to_string()
+            code_language
         };
+        let _ = write!(
+            output,
+            "{}",
+            "╭─ ".bold().with(self.color_theme.code_block_border)
+        );
         let _ = writeln!(
             output,
             "{}",
-            format!("╭─ {label}")
-                .bold()
-                .with(self.color_theme.code_block_border)
+            format!("[{label}]").bold().with(self.color_theme.heading)
         );
     }
 
@@ -477,6 +490,24 @@ impl TerminalRenderer {
             "╰─".bold().with(self.color_theme.code_block_border)
         );
         output.push_str("\n\n");
+    }
+
+    fn heading_prefix(&self, level: u8) -> String {
+        let marker = match level {
+            1 => "◆ ",
+            2 => "▸ ",
+            3 => "• ",
+            _ => "· ",
+        };
+        format!("{}", marker.bold().with(self.color_theme.heading))
+    }
+
+    fn quote_prefix(&self, depth: usize) -> String {
+        let mut prefix = String::new();
+        for _ in 0..depth {
+            prefix.push_str(&format!("{}", "│ ".with(self.color_theme.quote)));
+        }
+        prefix
     }
 
     fn push_text(
@@ -516,6 +547,10 @@ impl TerminalRenderer {
             })
             .collect::<Vec<_>>();
 
+        if self.should_render_table_compact(&widths) {
+            return self.render_table_compact(table);
+        }
+
         let border = format!("{}", "│".with(self.color_theme.table_border));
         let separator = widths
             .iter()
@@ -541,6 +576,71 @@ impl TerminalRenderer {
             }
         }
 
+        output
+    }
+
+    fn should_render_table_compact(&self, widths: &[usize]) -> bool {
+        let Ok((terminal_width, _)) = size() else {
+            return false;
+        };
+        if terminal_width < 72 {
+            return true;
+        }
+        let table_width = widths.iter().copied().sum::<usize>() + widths.len() * 3 + 1;
+        table_width > usize::from(terminal_width)
+    }
+
+    fn render_table_compact(&self, table: &TableState) -> String {
+        if table.headers.is_empty() && table.rows.is_empty() {
+            return String::new();
+        }
+
+        let rows = table.rows.clone();
+        if rows.is_empty() {
+            return table.headers.join(" · ");
+        }
+
+        let column_count = rows
+            .iter()
+            .map(Vec::len)
+            .max()
+            .unwrap_or(table.headers.len());
+        let headers = if table.headers.is_empty() {
+            (0..column_count)
+                .map(|index| format!("Column {}", index + 1))
+                .collect::<Vec<_>>()
+        } else {
+            table.headers.clone()
+        };
+
+        let mut output = String::new();
+        for (row_index, row) in rows.iter().enumerate() {
+            if row_index > 0 {
+                output.push('\n');
+            }
+            output.push_str("  • ");
+            let mut wrote_any = false;
+            for (index, header) in headers.iter().enumerate() {
+                let value = row.get(index).map_or("", String::as_str);
+                if value.is_empty() {
+                    continue;
+                }
+                if wrote_any {
+                    output.push('\n');
+                    output.push_str("    ");
+                }
+                let _ = write!(
+                    output,
+                    "{}: {}",
+                    header.as_str().bold().with(self.color_theme.heading),
+                    value
+                );
+                wrote_any = true;
+            }
+            if !wrote_any {
+                output.push_str("<empty>");
+            }
+        }
         output
     }
 
@@ -591,6 +691,23 @@ impl TerminalRenderer {
         let rendered_markdown = self.markdown_to_ansi(markdown);
         write!(out, "{rendered_markdown}")?;
         if !rendered_markdown.ends_with('\n') {
+            writeln!(out)?;
+        }
+        out.flush()
+    }
+
+    /// Render markdown, then prefix every line with `bullet` (colored dot +
+    /// space) and align continuation lines to match.
+    pub fn stream_markdown_with_bullet(
+        &self,
+        markdown: &str,
+        bullet: &str,
+        out: &mut impl Write,
+    ) -> io::Result<()> {
+        let rendered = self.markdown_to_ansi(markdown);
+        let indented = add_bullet_prefix(&rendered, bullet);
+        write!(out, "{indented}")?;
+        if !indented.ends_with('\n') {
             writeln!(out)?;
         }
         out.flush()
@@ -888,6 +1005,35 @@ fn visible_width(input: &str) -> usize {
     strip_ansi(input).chars().count()
 }
 
+/// Wrap text in OSC 8 hyperlink escape sequences so terminals render it as a
+/// clickable link.  For multi-line text each line is wrapped individually so
+/// wrapped lines remain clickable.
+fn osc8_hyperlink(text: &str, url: &str) -> String {
+    let osc8_open = format!("\x1b]8;;{url}\x1b\\");
+    let osc8_close = "\x1b]8;;\x1b\\";
+    text.split('\n')
+        .map(|line| format!("{osc8_open}{line}{osc8_close}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Prepend `bullet` to the first line and align continuation lines with spaces.
+/// Handles ANSI-escaped text by measuring visible width (excluding ANSI codes).
+pub fn add_bullet_prefix(text: &str, bullet: &str) -> String {
+    let indent = " ".repeat(visible_width(bullet));
+    let mut result = String::with_capacity(text.len() + bullet.len() + 32);
+    for (i, line) in text.split('\n').enumerate() {
+        if i > 0 {
+            result.push('\n');
+            result.push_str(&indent);
+        } else {
+            result.push_str(bullet);
+        }
+        result.push_str(line);
+    }
+    result
+}
+
 fn strip_ansi(input: &str) -> String {
     let mut output = String::new();
     let mut chars = input.chars().peekable();
@@ -919,8 +1065,9 @@ mod tests {
         let terminal_renderer = TerminalRenderer::new();
         let markdown_output = terminal_renderer
             .render_markdown("# Heading\n\nThis is **bold** and *italic*.\n\n- item\n\n`code`");
+        let plain_text = strip_ansi(&markdown_output);
 
-        assert!(markdown_output.contains("Heading"));
+        assert!(plain_text.contains("◆ Heading"));
         assert!(markdown_output.contains("• item"));
         assert!(markdown_output.contains("code"));
         assert!(markdown_output.contains('\u{1b}'));
@@ -944,7 +1091,7 @@ mod tests {
             terminal_renderer.markdown_to_ansi("```rust\nfn hi() { println!(\"hi\"); }\n```");
         let plain_text = strip_ansi(&markdown_output);
 
-        assert!(plain_text.contains("╭─ rust"));
+        assert!(plain_text.contains("╭─ [rust]"));
         assert!(plain_text.contains("fn hi"));
         assert!(markdown_output.contains('\u{1b}'));
         assert!(markdown_output.contains("[48;5;236m"));
@@ -959,8 +1106,8 @@ mod tests {
 
         assert!(plain_text.contains("1. first"));
         assert!(plain_text.contains("2. second"));
-        assert!(plain_text.contains("  • nested"));
-        assert!(plain_text.contains("  • child"));
+        assert!(plain_text.contains("  ◦ nested"));
+        assert!(plain_text.contains("  ◦ child"));
     }
 
     #[test]
@@ -1047,7 +1194,7 @@ mod tests {
             terminal_renderer.markdown_to_ansi("````markdown\n```rust\nfn nested() {}\n```\n````");
         let plain_text = strip_ansi(&markdown_output);
 
-        assert!(plain_text.contains("╭─ markdown"));
+        assert!(plain_text.contains("╭─ [markdown]"));
         assert!(plain_text.contains("```rust"));
         assert!(plain_text.contains("fn nested()"));
     }

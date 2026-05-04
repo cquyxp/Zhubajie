@@ -1,12 +1,14 @@
 use runtime::{
     worker_boot::{WorkerReadySnapshot, WorkerTaskReceipt},
-    ConfigLoader,
-    TaskPacket,
+    ConfigLoader, TaskPacket,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::{to_pretty_json, global_task_registry, global_worker_registry, global_team_registry, global_cron_registry};
+use crate::{
+    global_cron_registry, global_task_registry, global_team_registry, global_worker_registry,
+    to_pretty_json,
+};
 
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn run_ask_user_question(input: AskUserQuestionInput) -> Result<String, String> {
@@ -243,7 +245,9 @@ pub(crate) fn run_worker_terminate(input: WorkerIdInput) -> Result<String, Strin
 }
 
 #[allow(clippy::needless_pass_by_value)]
-pub(crate) fn run_worker_observe_completion(input: WorkerObserveCompletionInput) -> Result<String, String> {
+pub(crate) fn run_worker_observe_completion(
+    input: WorkerObserveCompletionInput,
+) -> Result<String, String> {
     let worker = global_worker_registry().observe_completion(
         &input.worker_id,
         &input.finish_reason,

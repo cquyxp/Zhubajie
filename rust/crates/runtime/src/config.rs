@@ -83,6 +83,8 @@ pub struct RuntimeHookConfig {
     pre_tool_use: Vec<String>,
     post_tool_use: Vec<String>,
     post_tool_use_failure: Vec<String>,
+    pre_compact: Vec<String>,
+    post_compact: Vec<String>,
 }
 
 /// Raw permission rule lists grouped by allow, deny, and ask behavior.
@@ -245,7 +247,10 @@ impl ConfigLoader {
             || PathBuf::from(".claw.json"),
             |parent| parent.join(".claw.json"),
         );
-        vec![
+        let binary_dir_config = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|p| p.join(".claw").join("settings.json")));
+        let mut entries = vec![
             ConfigEntry {
                 source: ConfigSource::User,
                 path: user_legacy_path,
@@ -266,7 +271,20 @@ impl ConfigLoader {
                 source: ConfigSource::Local,
                 path: self.cwd.join(".claw").join("settings.local.json"),
             },
-        ]
+        ];
+        // Insert binary-local config between User and Project entries so
+        // it serves as installation-wide defaults without being overridden
+        // by per-user config.
+        if let Some(binary_path) = binary_dir_config {
+            entries.insert(
+                2,
+                ConfigEntry {
+                    source: ConfigSource::User,
+                    path: binary_path,
+                },
+            );
+        }
+        entries
     }
 
     pub fn load(&self) -> Result<RuntimeConfig, ConfigError> {
@@ -572,11 +590,15 @@ impl RuntimeHookConfig {
         pre_tool_use: Vec<String>,
         post_tool_use: Vec<String>,
         post_tool_use_failure: Vec<String>,
+        pre_compact: Vec<String>,
+        post_compact: Vec<String>,
     ) -> Self {
         Self {
             pre_tool_use,
             post_tool_use,
             post_tool_use_failure,
+            pre_compact,
+            post_compact,
         }
     }
 
@@ -604,11 +626,23 @@ impl RuntimeHookConfig {
             &mut self.post_tool_use_failure,
             other.post_tool_use_failure(),
         );
+        extend_unique(&mut self.pre_compact, other.pre_compact());
+        extend_unique(&mut self.post_compact, other.post_compact());
     }
 
     #[must_use]
     pub fn post_tool_use_failure(&self) -> &[String] {
         &self.post_tool_use_failure
+    }
+
+    #[must_use]
+    pub fn pre_compact(&self) -> &[String] {
+        &self.pre_compact
+    }
+
+    #[must_use]
+    pub fn post_compact(&self) -> &[String] {
+        &self.post_compact
     }
 }
 
@@ -742,7 +776,9 @@ fn parse_optional_model(root: &JsonValue) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn parse_optional_model_config(root: &JsonValue) -> Result<crate::model_config::ModelConfig, ConfigError> {
+fn parse_optional_model_config(
+    root: &JsonValue,
+) -> Result<crate::model_config::ModelConfig, ConfigError> {
     let Some(object) = root.as_object() else {
         return Ok(crate::model_config::ModelConfig::default());
     };
@@ -751,20 +787,29 @@ fn parse_optional_model_config(root: &JsonValue) -> Result<crate::model_config::
     };
     let models_obj = expect_object(models_value, "merged settings.models")?;
 
-    let aliases = optional_string_map(models_obj, "aliases", "merged settings.models")?
-        .unwrap_or_default();
+    let aliases =
+        optional_string_map(models_obj, "aliases", "merged settings.models")?.unwrap_or_default();
 
     let mut providers = std::collections::BTreeMap::new();
     if let Some(providers_value) = models_obj.get("providers") {
         let prov_obj = expect_object(providers_value, "merged settings.models.providers")?;
         for (id, val) in prov_obj {
             let prov = expect_object(val, &format!("merged settings.models.providers.{}", id))?;
-            providers.insert(id.clone(), crate::model_config::ModelProviderConfig {
-                kind: expect_string(prov, "kind", &format!("models.providers.{}.kind", id))?.to_string(),
-                base_url: expect_string(prov, "baseUrl", &format!("models.providers.{}.baseUrl", id))?.to_string(),
-                auth_env: optional_string(prov, "authEnv", "")?.map(str::to_string),
-                default_model: optional_string(prov, "defaultModel", "")?.map(str::to_string),
-            });
+            providers.insert(
+                id.clone(),
+                crate::model_config::ModelProviderConfig {
+                    kind: expect_string(prov, "kind", &format!("models.providers.{}.kind", id))?
+                        .to_string(),
+                    base_url: expect_string(
+                        prov,
+                        "baseUrl",
+                        &format!("models.providers.{}.baseUrl", id),
+                    )?
+                    .to_string(),
+                    auth_env: optional_string(prov, "authEnv", "")?.map(str::to_string),
+                    default_model: optional_string(prov, "defaultModel", "")?.map(str::to_string),
+                },
+            );
         }
     }
 
@@ -773,15 +818,21 @@ fn parse_optional_model_config(root: &JsonValue) -> Result<crate::model_config::
         let route_obj = expect_object(routing_value, "merged settings.models.routing")?;
         if let Some(prefix_value) = route_obj.get("prefix") {
             let prefix_obj = expect_object(prefix_value, "merged settings.models.routing.prefix")?;
-            routing.prefix = optional_string_map(prefix_obj, "routing.prefix", "")?.unwrap_or_default();
+            routing.prefix =
+                optional_string_map(prefix_obj, "routing.prefix", "")?.unwrap_or_default();
         }
         if let Some(exact_value) = route_obj.get("exact") {
             let exact_obj = expect_object(exact_value, "merged settings.models.routing.exact")?;
-            routing.exact = optional_string_map(exact_obj, "routing.exact", "")?.unwrap_or_default();
+            routing.exact =
+                optional_string_map(exact_obj, "routing.exact", "")?.unwrap_or_default();
         }
     }
 
-    Ok(crate::model_config::ModelConfig { aliases, providers, routing })
+    Ok(crate::model_config::ModelConfig {
+        aliases,
+        providers,
+        routing,
+    })
 }
 
 fn parse_optional_aliases(root: &JsonValue) -> Result<BTreeMap<String, String>, ConfigError> {
@@ -811,6 +862,8 @@ fn parse_optional_hooks_config_object(
         post_tool_use: optional_string_array(hooks, "PostToolUse", context)?.unwrap_or_default(),
         post_tool_use_failure: optional_string_array(hooks, "PostToolUseFailure", context)?
             .unwrap_or_default(),
+        pre_compact: optional_string_array(hooks, "PreCompact", context)?.unwrap_or_default(),
+        post_compact: optional_string_array(hooks, "PostCompact", context)?.unwrap_or_default(),
     })
 }
 
@@ -1963,11 +2016,15 @@ mod tests {
             vec!["pre-a".to_string()],
             vec!["post-a".to_string()],
             vec!["failure-a".to_string()],
+            Vec::new(),
+            Vec::new(),
         );
         let overlay = RuntimeHookConfig::new(
             vec!["pre-a".to_string(), "pre-b".to_string()],
             vec!["post-a".to_string(), "post-b".to_string()],
             vec!["failure-b".to_string()],
+            Vec::new(),
+            Vec::new(),
         );
 
         // when

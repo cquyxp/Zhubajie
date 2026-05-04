@@ -4,9 +4,7 @@
 //!
 //! [`ApiClient`]: runtime::ApiClient
 
-use runtime::{
-    AssistantEvent, ContentBlock, ConversationMessage, MessageRole, PromptCacheEvent,
-};
+use runtime::{AssistantEvent, ContentBlock, ConversationMessage, MessageRole, PromptCacheEvent};
 
 use crate::prompt_cache::PromptCacheRecord;
 use crate::types::{InputContentBlock, InputMessage, ToolResultContentBlock};
@@ -47,9 +45,10 @@ pub fn convert_messages(messages: &[ConversationMessage]) -> Vec<InputMessage> {
                     },
                 })
                 .collect::<Vec<_>>();
-            (!content.is_empty()).then(|| InputMessage {
+            (!content.is_empty() || message.reasoning_content.is_some()).then(|| InputMessage {
                 role: role.to_string(),
                 content,
+                reasoning_content: message.reasoning_content.clone(),
             })
         })
         .collect()
@@ -72,9 +71,7 @@ pub fn push_prompt_cache_record(client: &ProviderClient, events: &mut Vec<Assist
 /// Convert an API-level [`PromptCacheRecord`] into a runtime
 /// [`PromptCacheEvent`], returning `None` when the record contains no
 /// cache-break data worth reporting.
-pub fn prompt_cache_record_to_runtime_event(
-    record: PromptCacheRecord,
-) -> Option<PromptCacheEvent> {
+pub fn prompt_cache_record_to_runtime_event(record: PromptCacheRecord) -> Option<PromptCacheEvent> {
     let cache_break = record.cache_break?;
     Some(PromptCacheEvent {
         unexpected: cache_break.unexpected,

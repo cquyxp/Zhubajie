@@ -14,10 +14,15 @@ mod config;
 pub mod config_validate;
 mod conversation;
 pub mod error_guide;
-pub mod model_config;
 mod file_ops;
 mod git_context;
 pub mod green_contract;
+pub mod import;
+pub mod model_config;
+pub use import::{
+    detect_all, dry_run, perform_import, DetectedConfig, ExternalToolKind, ImportAction,
+    ImportReport,
+};
 mod hooks;
 mod json;
 mod lane_events;
@@ -102,7 +107,7 @@ pub use config_validate::{
 pub use conversation::{
     auto_compaction_threshold_from_env, ApiClient, ApiRequest, AssistantEvent, AutoCompactionEvent,
     ConversationRuntime, MessageResponse, PromptCacheEvent, RuntimeError, StaticToolExecutor,
-    ToolError, ToolExecutor, TurnSummary,
+    ToolError, ToolExecutor, TurnSummary, DEFAULT_SUBAGENT_STALENESS_TIMEOUT,
 };
 pub use error_guide::{ErrorGuide, GuidedError, QuickstartGuide};
 pub use file_ops::{
@@ -187,8 +192,8 @@ pub use sandbox::{
     SandboxRequest, SandboxStatus,
 };
 pub use session::{
-    ContentBlock, ConversationMessage, MessageRole, Session, SessionCompaction, SessionError,
-    SessionFork, SessionPromptEntry,
+    ContentBlock, ConversationMessage, MessageRole, PlanPhase, Session, SessionCompaction,
+    SessionError, SessionFork, SessionPromptEntry,
 };
 pub use sse::{IncrementalSseParser, SseEvent};
 pub use stale_base::{
