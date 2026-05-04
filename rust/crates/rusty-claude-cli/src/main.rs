@@ -4092,9 +4092,19 @@ fn render_config_report(section: Option<&str>) -> Result<String, Box<dyn std::er
             "plugins" => runtime_config
                 .get("plugins")
                 .or_else(|| runtime_config.get("enabledPlugins")),
+            "schema" => {
+                lines.push("  JSON Schema".to_string());
+                lines.push(serde_json::to_string_pretty(
+                    &runtime::config_validate::settings_schema(),
+                )?);
+                return Ok(lines.join(
+                    "
+",
+                ));
+            }
             other => {
                 lines.push(format!(
-                    "  Unsupported config section '{other}'. Use env, hooks, model, or plugins."
+                    "  Unsupported config section '{other}'. Use env, hooks, model, plugins, or schema."
                 ));
                 return Ok(lines.join(
                     "
@@ -4124,8 +4134,11 @@ fn render_config_report(section: Option<&str>) -> Result<String, Box<dyn std::er
 }
 
 fn render_config_json(
-    _section: Option<&str>,
+    section: Option<&str>,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    if matches!(section, Some("schema")) {
+        return Ok(runtime::config_validate::settings_schema());
+    }
     let cwd = env::current_dir()?;
     let loader = ConfigLoader::default_for(&cwd);
     let discovered = loader.discover();
@@ -7263,8 +7276,8 @@ mod tests {
         merge_prompt_with_stdin, normalize_permission_mode, parse_args, parse_export_args,
         parse_git_status_branch, parse_git_status_metadata_for, parse_git_workspace_summary,
         parse_history_count, permission_policy, print_help_to, push_output_block,
-        render_config_report, render_diff_report, render_diff_report_for, render_memory_report,
-        render_prompt_history_report, render_repl_help, render_resume_usage,
+        render_config_json, render_config_report, render_diff_report, render_diff_report_for,
+        render_memory_report, render_prompt_history_report, render_repl_help, render_resume_usage,
         render_session_markdown, repl_prompt_prefix, repl_status_line, resolve_model_alias,
         resolve_model_alias_with_config, resolve_repl_model, resolve_session_reference,
         response_to_events, resume_supported_slash_commands, run_resume_command, short_tool_id,
@@ -9362,6 +9375,10 @@ mod tests {
         let plugins_report =
             render_config_report(Some("plugins")).expect("plugins config report should render");
         assert!(plugins_report.contains("Merged section: plugins"));
+        let schema_report =
+            render_config_report(Some("schema")).expect("schema config report should render");
+        assert!(schema_report.contains("Merged section: schema"));
+        assert!(schema_report.contains("\"title\": \"Claw Code settings\""));
     }
 
     #[test]
@@ -9379,6 +9396,15 @@ mod tests {
         assert!(report.contains("Config"));
         assert!(report.contains("Discovered files"));
         assert!(report.contains("Merged JSON"));
+    }
+
+    #[test]
+    fn config_schema_json_is_available() {
+        let schema = render_config_json(Some("schema")).expect("schema json should render");
+        assert_eq!(schema["title"], "Claw Code settings");
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"]["model"].is_object());
+        assert!(schema["properties"]["hooks"]["properties"]["PreToolUse"].is_object());
     }
 
     #[test]

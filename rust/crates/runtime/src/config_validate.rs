@@ -3,6 +3,7 @@ use std::path::Path;
 
 use crate::config::ConfigError;
 use crate::json::JsonValue;
+use serde_json::{json, Value as SchemaValue};
 
 /// Diagnostic emitted when a config file contains a suspect field.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -320,6 +321,166 @@ const DEPRECATED_FIELDS: &[DeprecatedField] = &[
         replacement: "plugins.enabled",
     },
 ];
+
+/// Generate the JSON Schema for `settings.json`.
+#[must_use]
+pub fn settings_schema() -> SchemaValue {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Claw Code settings",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "$schema": string_schema(),
+            "model": string_schema(),
+            "hooks": hooks_schema(),
+            "permissions": permissions_schema(),
+            "permissionMode": string_schema(),
+            "mcpServers": mcp_servers_schema(),
+            "oauth": oauth_schema(),
+            "enabledPlugins": object_schema(boolean_schema()),
+            "plugins": plugins_schema(),
+            "sandbox": sandbox_schema(),
+            "env": object_schema(string_schema()),
+            "aliases": object_schema(string_schema()),
+            "providerFallbacks": provider_fallbacks_schema(),
+            "trustedRoots": array_schema(string_schema()),
+        }
+    })
+}
+
+fn string_schema() -> SchemaValue {
+    json!({"type": "string"})
+}
+
+fn boolean_schema() -> SchemaValue {
+    json!({"type": "boolean"})
+}
+
+fn integer_schema() -> SchemaValue {
+    json!({"type": "integer"})
+}
+
+fn array_schema(items: SchemaValue) -> SchemaValue {
+    json!({
+        "type": "array",
+        "items": items,
+    })
+}
+
+fn object_schema(additional_properties: SchemaValue) -> SchemaValue {
+    json!({
+        "type": "object",
+        "additionalProperties": additional_properties,
+    })
+}
+
+fn hooks_schema() -> SchemaValue {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "PreToolUse": array_schema(string_schema()),
+            "PostToolUse": array_schema(string_schema()),
+            "PostToolUseFailure": array_schema(string_schema()),
+        }
+    })
+}
+
+fn permissions_schema() -> SchemaValue {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "defaultMode": string_schema(),
+            "allow": array_schema(string_schema()),
+            "deny": array_schema(string_schema()),
+            "ask": array_schema(string_schema()),
+        }
+    })
+}
+
+fn plugin_settings_schema() -> SchemaValue {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "enabled": object_schema(boolean_schema()),
+            "externalDirectories": array_schema(string_schema()),
+            "installRoot": string_schema(),
+            "registryPath": string_schema(),
+            "bundledRoot": string_schema(),
+            "maxOutputTokens": integer_schema(),
+        }
+    })
+}
+
+fn plugins_schema() -> SchemaValue {
+    plugin_settings_schema()
+}
+
+fn sandbox_schema() -> SchemaValue {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "enabled": boolean_schema(),
+            "namespaceRestrictions": boolean_schema(),
+            "networkIsolation": boolean_schema(),
+            "filesystemMode": string_schema(),
+            "allowedMounts": array_schema(string_schema()),
+        }
+    })
+}
+
+fn oauth_schema() -> SchemaValue {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "clientId": string_schema(),
+            "authorizeUrl": string_schema(),
+            "tokenUrl": string_schema(),
+            "callbackPort": integer_schema(),
+            "manualRedirectUrl": string_schema(),
+            "scopes": array_schema(string_schema()),
+        }
+    })
+}
+
+fn provider_fallbacks_schema() -> SchemaValue {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "primary": string_schema(),
+            "fallbacks": array_schema(string_schema()),
+        }
+    })
+}
+
+fn mcp_servers_schema() -> SchemaValue {
+    json!({
+        "type": "object",
+        "description": "Configured MCP servers keyed by server name",
+        "additionalProperties": {
+            "type": "object",
+            "properties": {
+                "type": string_schema(),
+                "command": string_schema(),
+                "args": array_schema(string_schema()),
+                "env": object_schema(string_schema()),
+                "toolCallTimeoutMs": integer_schema(),
+                "url": string_schema(),
+                "headers": object_schema(string_schema()),
+                "headersHelper": string_schema(),
+                "name": string_schema(),
+                "id": string_schema(),
+            },
+            "additionalProperties": true,
+        }
+    })
+}
 
 // ---- line-number resolution ----
 

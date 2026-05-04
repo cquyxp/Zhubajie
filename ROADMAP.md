@@ -155,7 +155,7 @@ src/
 
 4. **[x] 模型配置 UI** — `/model` 命令显示当前模型、提供商、别名和路由摘要
 5. **[x] 提供商健康检查** — 在启动时验证配置的提供商连接
-6. **[ ] 配置文件自动补全** — JSON Schema 驱动的 settings.json 补全
+6. **[x] 配置文件自动补全** — `/config schema` 导出 JSON Schema，供 settings.json 编辑器补全使用
 
 ### 低优先级 — 体验打磨
 
