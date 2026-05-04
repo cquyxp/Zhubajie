@@ -37,8 +37,8 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 use api::{
     convert_messages, detect_provider_kind, max_tokens_for_model, model_token_limit,
     prompt_cache_record_to_runtime_event, push_prompt_cache_record, resolve_startup_auth_source,
-    AnthropicClient, AuthSource, ContentBlockDelta, InputContentBlock, InputMessage,
-    MessageRequest, MessageResponse, OutputContentBlock, PromptCache,
+    AnthropicClient, AuthSource, ContentBlockDelta, DynamicProviderRegistry, InputContentBlock,
+    InputMessage, MessageRequest, MessageResponse, OutputContentBlock, PromptCache,
     ProviderClient as ApiProviderClient, ProviderKind, StreamEvent as ApiStreamEvent, ToolChoice,
     ToolDefinition, ToolResultContentBlock,
 };
@@ -718,6 +718,75 @@ struct StatusUsage {
     latest: TokenUsage,
     cumulative: TokenUsage,
     estimated_tokens: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ModelReportDetails {
+    provider: String,
+    alias: Option<String>,
+    routing: Option<String>,
+    config_summary: Option<String>,
+}
+
+fn model_report_details(
+    model: &str,
+    runtime_config: &runtime::RuntimeConfig,
+) -> ModelReportDetails {
+    let model_config = runtime_config.model_config();
+    let registry = DynamicProviderRegistry::new(model_config);
+    let canonical_model = registry
+        .resolve_alias(model)
+        .unwrap_or_else(|| model.to_string());
+
+    let provider = registry
+        .resolve_provider(&canonical_model)
+        .map(|(kind, _)| kind.to_string())
+        .unwrap_or_else(|| match detect_provider_kind(&canonical_model) {
+            ProviderKind::Anthropic => "anthropic".to_string(),
+            ProviderKind::Xai => "xai".to_string(),
+            ProviderKind::OpenAi => "openai".to_string(),
+        });
+
+    let alias = (canonical_model != model).then_some(format!("{model} -> {canonical_model}"));
+    let routing = describe_model_routing(&canonical_model, model_config);
+    let config_summary = if model_config.aliases.is_empty()
+        && model_config.providers.is_empty()
+        && model_config.routing.is_empty()
+    {
+        None
+    } else {
+        Some(format!(
+            "{} aliases · {} custom providers · {} routes",
+            model_config.aliases.len(),
+            model_config.providers.len(),
+            model_config.routing.exact.len() + model_config.routing.prefix.len()
+        ))
+    };
+
+    ModelReportDetails {
+        provider,
+        alias,
+        routing,
+        config_summary,
+    }
+}
+
+fn describe_model_routing(
+    model: &str,
+    model_config: &runtime::model_config::ModelConfig,
+) -> Option<String> {
+    if let Some(provider_id) = model_config.routing.exact.get(model) {
+        return Some(format!("exact {model} -> {provider_id}"));
+    }
+
+    let matched = model_config
+        .routing
+        .prefix
+        .iter()
+        .filter(|(prefix, _)| model.starts_with(prefix.as_str()))
+        .max_by_key(|(prefix, _)| prefix.len());
+
+    matched.map(|(prefix, provider_id)| format!("prefix {prefix}* -> {provider_id}"))
 }
 
 #[allow(clippy::struct_field_names)]
@@ -2647,11 +2716,22 @@ impl LiveCli {
     }
 
     fn set_model(&mut self, model: Option<String>) -> Result<bool, Box<dyn std::error::Error>> {
+        let cwd = env::current_dir()?;
+        let loader = ConfigLoader::default_for(&cwd);
+        let runtime_config = loader
+            .load()
+            .unwrap_or_else(|_| runtime::RuntimeConfig::empty());
+
         let Some(model) = model else {
+            let details = model_report_details(&self.model, &runtime_config);
             println!(
                 "{}",
                 format_model_report(
                     &self.model,
+                    Some(details.provider.as_str()),
+                    details.alias.as_deref(),
+                    details.routing.as_deref(),
+                    details.config_summary.as_deref(),
                     self.runtime.session().messages.len(),
                     self.runtime.usage().turns(),
                 )
@@ -2662,10 +2742,15 @@ impl LiveCli {
         let model = resolve_model_alias_with_config(&model);
 
         if model == self.model {
+            let details = model_report_details(&self.model, &runtime_config);
             println!(
                 "{}",
                 format_model_report(
                     &self.model,
+                    Some(details.provider.as_str()),
+                    details.alias.as_deref(),
+                    details.routing.as_deref(),
+                    details.config_summary.as_deref(),
                     self.runtime.session().messages.len(),
                     self.runtime.usage().turns(),
                 )
@@ -2673,7 +2758,6 @@ impl LiveCli {
             return Ok(false);
         }
 
-        let previous = self.model.clone();
         let mut session = self.runtime.session().clone();
         let message_count = session.messages.len();
 
@@ -2718,9 +2802,18 @@ impl LiveCli {
         )?;
         self.replace_runtime(runtime)?;
         self.model.clone_from(&model);
+        let details = model_report_details(&model, &runtime_config);
         println!(
             "{}",
-            format_model_switch_report(&previous, &model, message_count)
+            format_model_report(
+                &model,
+                Some(details.provider.as_str()),
+                details.alias.as_deref(),
+                details.routing.as_deref(),
+                details.config_summary.as_deref(),
+                message_count,
+                self.runtime.usage().turns(),
+            )
         );
         Ok(true)
     }
@@ -9111,9 +9204,21 @@ mod tests {
 
     #[test]
     fn model_report_uses_sectioned_layout() {
-        let report = format_model_report("claude-sonnet", 12, 4);
+        let report = format_model_report(
+            "claude-sonnet",
+            Some("anthropic"),
+            Some("sonnet -> claude-sonnet"),
+            Some("exact claude-sonnet -> anthropic"),
+            Some("1 aliases · 1 custom providers · 1 routes"),
+            12,
+            4,
+        );
         assert!(report.contains("Model"));
         assert!(report.contains("Current          claude-sonnet"));
+        assert!(report.contains("Provider         anthropic"));
+        assert!(report.contains("Alias            sonnet -> claude-sonnet"));
+        assert!(report.contains("Routing          exact claude-sonnet -> anthropic"));
+        assert!(report.contains("Config           1 aliases · 1 custom providers · 1 routes"));
         assert!(report.contains("Session          12 messages · 4 turns"));
         assert!(report.contains("Switch models with /model <name>"));
     }

@@ -411,6 +411,11 @@ impl RuntimeConfig {
     }
 
     #[must_use]
+    pub fn model_config(&self) -> &crate::model_config::ModelConfig {
+        &self.feature_config.model_config
+    }
+
+    #[must_use]
     pub fn permission_mode(&self) -> Option<ResolvedPermissionMode> {
         self.feature_config.permission_mode
     }

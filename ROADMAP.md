@@ -24,10 +24,10 @@
 
 | 文件 | 行数 | 问题 | 建议 |
 |------|------|------|------|
-| `main.rs` | 12,714 | 巨型单体：CLI解析、REPL、Doctor、Server、Telegram全在一个文件 | 拆分为 `args.rs`、`repl.rs`、`doctor.rs`、`server.rs`、`telegram_handler.rs` |
-| `tools/lib.rs` | 9,779 | 所有工具实现在一个文件 | 按类别拆：`bash.rs`、`file_tools.rs`、`task_tools.rs`、`worker_tools.rs`、`mcp_tools.rs` 等 |
-| `commands/lib.rs` | 5,666 | 所有 slash 命令定义在一起 | 按功能域拆分 |
-| `plugins/lib.rs` | 3,657 | 插件管理逻辑混合 | 拆分为 lifecycle、install、discovery |
+| `main.rs` | 10,008 | 仍然是主入口，但已拆出 `doctor.rs`、`args.rs`、`format.rs`、`server.rs`、`telegram_handler.rs` | 继续收缩 REPL / status / render 相关职责 |
+| `tools/lib.rs` | 7,503 | 所有工具实现在一个文件 | 按类别拆：`bash.rs`、`file_tools.rs`、`task_tools.rs`、`worker_tools.rs`、`mcp_tools.rs` 等 |
+| `commands/lib.rs` | 5,344 | 所有 slash 命令定义在一起 | 按功能域拆分 |
+| `plugins/lib.rs` | 3,277 | 插件管理逻辑混合 | 拆分为 lifecycle、install、discovery |
 | `mcp_stdio.rs` | 2,944 | MCP 通信 + 测试混合 | 移除测试到单独的 test 文件 |
 | `config.rs` | 2,155 | 解析逻辑增长 | 可考虑按配置段拆分 |
 | `openai_compat.rs` | 2,218 | OpenAI 协议适配 | 流式解析可独立成模块 |
@@ -69,7 +69,7 @@ main.rs 当前是一个巨型单体文件，涵盖 6 个独立职责域。按以
 #### 最终目标 ✅ 已完成所有阶段
 ```
 src/
-├── main.rs          (~10,327行, 剩余 REPL/core/测试)
+├── main.rs          (~10,008行, 剩余 REPL/core/测试)
 ├── doctor.rs        (~789行)
 ├── args.rs          (~1,212行)
 ├── format.rs        (~231行)
@@ -79,6 +79,17 @@ src/
 ├── input.rs         (已有, ~330行)
 └── render.rs        (已有, ~1,070行)
 ```
+
+### 会话目标模式 — 已完成
+
+- **文件**：`rust/crates/commands/src/lib.rs`、`rust/crates/runtime/src/session.rs`、`rust/crates/rusty-claude-cli/src/main.rs`
+- **目标**：为长任务提供一个可持久化的会话级目标
+- **已落地**
+  - `/goal set <目标>`、`/goal show`、`/goal clear`
+  - `Session.goal` 持久化与恢复
+  - resume 后可读取同一目标
+  - 状态栏和 `/status` 输出目标
+  - 每轮上下文注入 Session Goal
 
 ### UI / 体验打磨 — 已完成
 
@@ -140,10 +151,10 @@ src/
   - 明确告诉用户“当前是什么状态”
   - 明确告诉用户“下一步应该做什么”
 
-### 中优先级 — 拆分 tools/lib.rs (9,779行)
+### 中优先级 — 拆分 tools/lib.rs (7,503行)
 
-4. **[ ] 模型配置 UI** — `/model` 命令显示自定义提供商和路由规则
-5. **[ ] 提供商健康检查** — 在启动时验证配置的提供商连接
+4. **[x] 模型配置 UI** — `/model` 命令显示当前模型、提供商、别名和路由摘要
+5. **[x] 提供商健康检查** — 在启动时验证配置的提供商连接
 6. **[ ] 配置文件自动补全** — JSON Schema 驱动的 settings.json 补全
 
 ### 低优先级 — 体验打磨

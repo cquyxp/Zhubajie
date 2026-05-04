@@ -45,16 +45,39 @@ impl GitWorkspaceSummary {
     }
 }
 
-pub(crate) fn format_model_report(model: &str, message_count: usize, turns: u32) -> String {
-    format!(
-        "Model
-  Current          {model}
-  Session          {message_count} messages · {turns} turns
-
-Usage
-  Inspect the active model with /model
-  Switch models with /model <name>"
-    )
+pub(crate) fn format_model_report(
+    model: &str,
+    provider: Option<&str>,
+    alias: Option<&str>,
+    routing: Option<&str>,
+    config_summary: Option<&str>,
+    message_count: usize,
+    turns: u32,
+) -> String {
+    let mut lines = Vec::with_capacity(8);
+    lines.push(format!("Model\n  Current          {model}"));
+    lines.push(format!(
+        "  Provider         {}",
+        provider.unwrap_or("<unknown>")
+    ));
+    if let Some(alias) = alias {
+        lines.push(format!("  Alias            {alias}"));
+    }
+    if let Some(routing) = routing {
+        lines.push(format!("  Routing          {routing}"));
+    }
+    lines.push(format!(
+        "  Config           {}",
+        config_summary.unwrap_or("default model configuration")
+    ));
+    lines.push(format!(
+        "  Session          {message_count} messages · {turns} turns"
+    ));
+    lines.push(String::new());
+    lines.push("Usage".to_string());
+    lines.push("  Inspect the active model with /model".to_string());
+    lines.push("  Switch models with /model <name>".to_string());
+    lines.join("\n")
 }
 
 pub(crate) fn format_model_switch_report(
