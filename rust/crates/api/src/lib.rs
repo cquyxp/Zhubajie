@@ -25,8 +25,8 @@ pub use http_client::{
     build_http_client, build_http_client_or_default, build_http_client_with, ProxyConfig,
 };
 pub use prompt_cache::{
-    CacheBreakEvent, PromptCache, PromptCacheConfig, PromptCachePaths, PromptCacheRecord,
-    PromptCacheStats,
+    request_fingerprint_diagnostic, CacheBreakEvent, PromptCache, PromptCacheConfig,
+    PromptCachePaths, PromptCacheRecord, PromptCacheStats, RequestFingerprintDiagnostic,
 };
 pub use providers::anthropic::{AnthropicClient, AnthropicClient as ApiClient, AuthSource};
 pub use providers::openai_compat::{
@@ -35,7 +35,7 @@ pub use providers::openai_compat::{
 };
 pub use providers::{
     detect_provider_kind, max_tokens_for_model, max_tokens_for_model_with_override,
-    model_token_limit, resolve_model_alias, ProviderKind,
+    model_capabilities, model_token_limit, resolve_model_alias, ProviderKind,
 };
 pub use sse::{parse_frame, SseParser};
 pub use types::{

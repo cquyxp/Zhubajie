@@ -35,12 +35,13 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use api::{
-    convert_messages, detect_provider_kind, max_tokens_for_model, model_token_limit,
-    prompt_cache_record_to_runtime_event, push_prompt_cache_record, resolve_startup_auth_source,
-    AnthropicClient, AuthSource, ContentBlockDelta, DynamicProviderRegistry, InputContentBlock,
-    InputMessage, MessageRequest, MessageResponse, OutputContentBlock, PromptCache,
-    ProviderClient as ApiProviderClient, ProviderKind, StreamEvent as ApiStreamEvent, ToolChoice,
-    ToolDefinition, ToolResultContentBlock,
+    convert_messages, detect_provider_kind, max_tokens_for_model, model_capabilities,
+    model_token_limit, prompt_cache_record_to_runtime_event, push_prompt_cache_record,
+    request_fingerprint_diagnostic, resolve_startup_auth_source, AnthropicClient, AuthSource,
+    ContentBlockDelta, DynamicProviderRegistry, InputContentBlock, InputMessage, MessageRequest,
+    MessageResponse, OutputContentBlock, PromptCache, ProviderClient as ApiProviderClient,
+    ProviderKind, StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition,
+    ToolResultContentBlock,
 };
 
 use commands::{
@@ -67,10 +68,10 @@ use runtime::{
     pricing_for_model, resolve_expected_base, resolve_sandbox_status, ApiClient, ApiRequest,
     AssistantEvent, BranchFreshness, CompactionConfig, ConfigLoader, ConfigSource, ContentBlock,
     ConversationMessage, ConversationRuntime, McpServer, McpServerManager, McpServerSpec, McpTool,
-    MessageRole, ModelPricing, PermissionMode, PermissionPolicy, PlanPhase, ProjectContext,
-    PromptCacheEvent, ResolvedPermissionMode, RuntimeError, Session, SessionStore, TokenUsage,
-    ToolError, ToolExecutor, TrustConfig, TrustResolver, UsageTracker, WorkerRegistry,
-    FRONTIER_MODEL_NAME,
+    MessageRole, ModelPricing, ModelRouteEvent, PermissionMode, PermissionPolicy, PlanPhase,
+    ProjectContext, PromptCacheDiagnostic, PromptCacheEvent, ResolvedPermissionMode, RuntimeError,
+    Session, SessionStore, TokenUsage, ToolError, ToolExecutor, TrustConfig, TrustResolver,
+    UsageTracker, WorkerRegistry, FRONTIER_MODEL_NAME,
 };
 
 use runtime::telegram::{ChatId, MessageHandler, TelegramConfig, TelegramRuntime};
@@ -2230,6 +2231,8 @@ impl LiveCli {
                 "tool_uses": collect_tool_uses(&summary),
                 "tool_results": collect_tool_results(&summary),
                 "prompt_cache_events": collect_prompt_cache_events(&summary),
+                "prompt_cache_diagnostics": collect_prompt_cache_diagnostics(&summary),
+                "model_routes": collect_model_routes(&summary),
                 "usage": {
                     "input_tokens": summary.usage.input_tokens,
                     "output_tokens": summary.usage.output_tokens,
@@ -5701,9 +5704,14 @@ impl ApiClient for AnthropicRuntimeClient {
             progress_reporter.mark_model_phase();
         }
         let is_post_tool = request_ends_with_tool_result(&request);
+        let route =
+            resolve_deepseek_auto_route(&self.model, &request, self.reasoning_effort.as_deref());
+        let selected_model = route
+            .as_ref()
+            .map_or_else(|| self.model.clone(), |route| route.selected_model.clone());
         let message_request = MessageRequest {
-            model: self.model.clone(),
-            max_tokens: max_tokens_for_model(&self.model),
+            model: selected_model.clone(),
+            max_tokens: max_tokens_for_model(&selected_model),
             messages: convert_messages(&request.messages),
             system: (!request.system_prompt.is_empty()).then(|| request.system_prompt.join("\n\n")),
             tools: self
@@ -5711,9 +5719,13 @@ impl ApiClient for AnthropicRuntimeClient {
                 .then(|| filter_tool_specs(&self.tool_registry, self.allowed_tools.as_ref())),
             tool_choice: self.enable_tools.then_some(ToolChoice::Auto),
             stream: true,
-            reasoning_effort: self.reasoning_effort.clone(),
+            reasoning_effort: route
+                .as_ref()
+                .and_then(|route| route.reasoning_effort.clone())
+                .or_else(|| self.reasoning_effort.clone()),
             ..Default::default()
         };
+        let route_event = route.map(|route| AssistantEvent::ModelRoute(route.into_event()));
 
         self.runtime.block_on(async {
             // When resuming after tool execution, apply a stall timeout on the
@@ -5724,7 +5736,11 @@ impl ApiClient for AnthropicRuntimeClient {
 
             for attempt in 1..=max_attempts {
                 let result = self
-                    .consume_stream(&message_request, is_post_tool && attempt == 1)
+                    .consume_stream(
+                        &message_request,
+                        is_post_tool && attempt == 1,
+                        route_event.clone(),
+                    )
                     .await;
                 match result {
                     Ok(events) => return Ok(events),
@@ -5803,7 +5819,9 @@ impl AnthropicRuntimeClient {
         &self,
         message_request: &MessageRequest,
         apply_stall_timeout: bool,
+        route_event: Option<AssistantEvent>,
     ) -> Result<Vec<AssistantEvent>, RuntimeError> {
+        let request_diagnostics = prompt_cache_diagnostics_for_request(message_request);
         let mut stream = self
             .client
             .stream_message(message_request)
@@ -5821,6 +5839,10 @@ impl AnthropicRuntimeClient {
         let renderer = TerminalRenderer::new();
         let mut markdown_stream = MarkdownStreamState::default();
         let mut events = Vec::new();
+        if let Some(route_event) = route_event.clone() {
+            events.push(route_event);
+        }
+        events.extend(request_diagnostics.clone());
         let mut pending_tool: Option<(String, String, String)> = None;
         let mut block_has_thinking_summary = false;
         let mut saw_stop = false;
@@ -5983,10 +6005,189 @@ impl AnthropicRuntimeClient {
             .map_err(|error| {
                 RuntimeError::new(format_user_visible_api_error(&self.session_id, &error))
             })?;
-        let mut events = response_to_events(response, out)?;
+        let mut events = Vec::new();
+        if let Some(route_event) = route_event {
+            events.push(route_event);
+        }
+        events.extend(request_diagnostics);
+        events.extend(response_to_events(response, out)?);
         push_prompt_cache_record(&self.client, &mut events);
         Ok(events)
     }
+}
+
+fn prompt_cache_diagnostics_for_request(request: &MessageRequest) -> Vec<AssistantEvent> {
+    if !model_capabilities(&request.model).reports_prompt_cache_usage {
+        return Vec::new();
+    }
+
+    let diagnostic = request_fingerprint_diagnostic(request);
+    vec![AssistantEvent::PromptCacheDiagnostic(
+        PromptCacheDiagnostic {
+            provider: "DeepSeek".to_string(),
+            model: request.model.clone(),
+            request_hash: diagnostic.request_hash,
+            fingerprint_version: diagnostic.fingerprint_version,
+            model_hash: diagnostic.model_hash,
+            system_hash: diagnostic.system_hash,
+            tools_hash: diagnostic.tools_hash,
+            messages_hash: diagnostic.messages_hash,
+            system_chars: diagnostic.system_chars,
+            tool_count: diagnostic.tool_count,
+            message_count: diagnostic.message_count,
+        },
+    )]
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeepSeekRouteDecision {
+    profile: String,
+    selected_model: String,
+    reasoning_effort: Option<String>,
+    reason: String,
+    signals: Vec<String>,
+}
+
+impl DeepSeekRouteDecision {
+    fn into_event(self) -> ModelRouteEvent {
+        ModelRouteEvent {
+            profile: self.profile,
+            selected_model: self.selected_model,
+            reasoning_effort: self.reasoning_effort,
+            reason: self.reason,
+            signals: self.signals,
+        }
+    }
+}
+
+fn resolve_deepseek_auto_route(
+    model: &str,
+    request: &ApiRequest,
+    explicit_reasoning_effort: Option<&str>,
+) -> Option<DeepSeekRouteDecision> {
+    if model.trim().to_ascii_lowercase() != "deepseek-auto" {
+        return None;
+    }
+
+    let mut signals = Vec::new();
+    let latest_text = latest_user_text(request).to_ascii_lowercase();
+    if contains_any(
+        &latest_text,
+        &[
+            "error",
+            "failed",
+            "failure",
+            "panic",
+            "stack trace",
+            "exception",
+            "test failed",
+            "compile failed",
+            "编译失败",
+            "测试失败",
+            "报错",
+            "异常",
+        ],
+    ) {
+        signals.push("error_context".to_string());
+    }
+    if contains_any(
+        &latest_text,
+        &[
+            "architecture",
+            "architect",
+            "refactor",
+            "review",
+            "debug",
+            "investigate",
+            "security",
+            "complex",
+            "deep",
+            "架构",
+            "重构",
+            "评审",
+            "审查",
+            "排查",
+            "调试",
+            "深入",
+            "复杂",
+            "安全",
+        ],
+    ) {
+        signals.push("complex_intent".to_string());
+    }
+    if request.messages.iter().any(message_has_tool_result) {
+        signals.push("tool_result_context".to_string());
+    }
+    if request.messages.len() > 12 {
+        signals.push("long_conversation".to_string());
+    }
+    let estimated_chars = estimate_api_request_chars(request);
+    if estimated_chars > 320_000 {
+        signals.push("large_context".to_string());
+    }
+
+    if signals.is_empty() {
+        return Some(DeepSeekRouteDecision {
+            profile: "deepseek-auto".to_string(),
+            selected_model: "deepseek-v4-flash".to_string(),
+            reasoning_effort: explicit_reasoning_effort.map(ToOwned::to_owned),
+            reason: "simple low-risk request".to_string(),
+            signals,
+        });
+    }
+
+    Some(DeepSeekRouteDecision {
+        profile: "deepseek-auto".to_string(),
+        selected_model: "deepseek-v4-pro".to_string(),
+        reasoning_effort: explicit_reasoning_effort
+            .map(ToOwned::to_owned)
+            .or_else(|| Some("max".to_string())),
+        reason: "complex task or tool/error context".to_string(),
+        signals,
+    })
+}
+
+fn latest_user_text(request: &ApiRequest) -> String {
+    request
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == MessageRole::User)
+        .map_or_else(String::new, message_text)
+}
+
+fn message_text(message: &ConversationMessage) -> String {
+    message
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            ContentBlock::ToolResult { output, .. } => Some(output.as_str()),
+            ContentBlock::ToolUse { input, .. } => Some(input.as_str()),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn message_has_tool_result(message: &ConversationMessage) -> bool {
+    message
+        .blocks
+        .iter()
+        .any(|block| matches!(block, ContentBlock::ToolResult { .. }))
+}
+
+fn estimate_api_request_chars(request: &ApiRequest) -> usize {
+    request.system_prompt.iter().map(String::len).sum::<usize>()
+        + request
+            .messages
+            .iter()
+            .map(message_text)
+            .map(|text| text.len())
+            .sum::<usize>()
+}
+
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
 }
 
 /// Returns `true` when the conversation ends with a tool-result message,
@@ -6161,6 +6362,44 @@ fn collect_prompt_cache_events(summary: &runtime::TurnSummary) -> Vec<serde_json
         .collect()
 }
 
+fn collect_prompt_cache_diagnostics(summary: &runtime::TurnSummary) -> Vec<serde_json::Value> {
+    summary
+        .prompt_cache_diagnostics
+        .iter()
+        .map(|diagnostic| {
+            json!({
+                "provider": diagnostic.provider,
+                "model": diagnostic.model,
+                "request_hash": diagnostic.request_hash,
+                "fingerprint_version": diagnostic.fingerprint_version,
+                "model_hash": diagnostic.model_hash,
+                "system_hash": diagnostic.system_hash,
+                "tools_hash": diagnostic.tools_hash,
+                "messages_hash": diagnostic.messages_hash,
+                "system_chars": diagnostic.system_chars,
+                "tool_count": diagnostic.tool_count,
+                "message_count": diagnostic.message_count,
+            })
+        })
+        .collect()
+}
+
+fn collect_model_routes(summary: &runtime::TurnSummary) -> Vec<serde_json::Value> {
+    summary
+        .model_routes
+        .iter()
+        .map(|route| {
+            json!({
+                "profile": route.profile,
+                "selected_model": route.selected_model,
+                "reasoning_effort": route.reasoning_effort,
+                "reason": route.reason,
+                "signals": route.signals,
+            })
+        })
+        .collect()
+}
+
 /// Slash commands that are registered in the spec list but not yet implemented
 /// in this build. Used to filter both REPL completions and help output so the
 /// discovery surface only shows commands that actually work (ROADMAP #39).
@@ -6311,6 +6550,9 @@ fn slash_command_completion_candidates_with_sessions(
         "/model opus",
         "/model sonnet",
         "/model haiku",
+        "/model deepseek-auto",
+        "/model deepseek-fast",
+        "/model deepseek-agent",
         "/permissions ",
         "/permissions read-only",
         "/permissions workspace-write",
@@ -7278,20 +7520,21 @@ mod tests {
         parse_history_count, permission_policy, print_help_to, push_output_block,
         render_config_json, render_config_report, render_diff_report, render_diff_report_for,
         render_memory_report, render_prompt_history_report, render_repl_help, render_resume_usage,
-        render_session_markdown, repl_prompt_prefix, repl_status_line, resolve_model_alias,
-        resolve_model_alias_with_config, resolve_repl_model, resolve_session_reference,
-        response_to_events, resume_supported_slash_commands, run_resume_command, short_tool_id,
-        slash_command_completion_candidates_with_sessions, status_context,
-        summarize_tool_payload_for_markdown, try_resolve_bare_skill_prompt, validate_no_args,
-        write_mcp_server_fixture, CliAction, CliOutputFormat, CliToolExecutor, GitWorkspaceSummary,
-        InternalPromptProgressEvent, InternalPromptProgressState, LiveCli, LocalHelpTopic,
-        PromptHistoryEntry, SlashCommand, StatusUsage, DEFAULT_MODEL, LATEST_SESSION_REFERENCE,
-        OFFICIAL_REPO_SLUG, STUB_COMMANDS, VERBOSE_MODE,
+        render_session_markdown, repl_prompt_prefix, repl_status_line, resolve_deepseek_auto_route,
+        resolve_model_alias, resolve_model_alias_with_config, resolve_repl_model,
+        resolve_session_reference, response_to_events, resume_supported_slash_commands,
+        run_resume_command, short_tool_id, slash_command_completion_candidates_with_sessions,
+        status_context, summarize_tool_payload_for_markdown, try_resolve_bare_skill_prompt,
+        validate_no_args, write_mcp_server_fixture, CliAction, CliOutputFormat, CliToolExecutor,
+        GitWorkspaceSummary, InternalPromptProgressEvent, InternalPromptProgressState, LiveCli,
+        LocalHelpTopic, PromptHistoryEntry, SlashCommand, StatusUsage, DEFAULT_MODEL,
+        LATEST_SESSION_REFERENCE, OFFICIAL_REPO_SLUG, STUB_COMMANDS, VERBOSE_MODE,
     };
     use api::{ApiError, MessageResponse, OutputContentBlock, Usage};
     use plugins::{
         PluginManager, PluginManagerConfig, PluginTool, PluginToolDefinition, PluginToolPermission,
     };
+    use runtime::ApiRequest;
     use runtime::{
         load_oauth_credentials, save_oauth_credentials, AssistantEvent, ConfigLoader, ContentBlock,
         ConversationMessage, MessageRole, OAuthConfig, PermissionMode, Session, ToolExecutor,
@@ -7922,6 +8165,9 @@ mod tests {
         assert_eq!(resolve_model_alias("opus"), "claude-opus-4-6");
         assert_eq!(resolve_model_alias("sonnet"), "claude-sonnet-4-6");
         assert_eq!(resolve_model_alias("haiku"), "claude-haiku-4-5-20251213");
+        assert_eq!(resolve_model_alias("deepseek-auto"), "deepseek-auto");
+        assert_eq!(resolve_model_alias("deepseek-fast"), "deepseek-v4-flash");
+        assert_eq!(resolve_model_alias("deepseek-agent"), "deepseek-v4-pro");
         assert_eq!(resolve_model_alias("claude-opus"), "claude-opus");
     }
 
@@ -10651,7 +10897,7 @@ UU conflicted.rs",
 
     #[test]
     fn accepts_valid_reasoning_effort_values() {
-        for value in ["low", "medium", "high"] {
+        for value in ["low", "medium", "high", "max"] {
             let result = parse_args(&[
                 "--reasoning-effort".to_string(),
                 value.to_string(),
@@ -10669,6 +10915,71 @@ UU conflicted.rs",
                 assert_eq!(reasoning_effort.as_deref(), Some(value));
             }
         }
+    }
+
+    #[test]
+    fn deepseek_auto_routes_simple_prompts_to_flash() {
+        let request = ApiRequest {
+            system_prompt: vec!["system".to_string()],
+            messages: vec![ConversationMessage::user_text("summarize this file")],
+        };
+
+        let route = resolve_deepseek_auto_route("deepseek-auto", &request, None)
+            .expect("deepseek-auto should route");
+
+        assert_eq!(route.selected_model, "deepseek-v4-flash");
+        assert_eq!(route.reasoning_effort, None);
+        assert!(route.signals.is_empty());
+    }
+
+    #[test]
+    fn deepseek_auto_routes_complex_chinese_prompts_to_pro() {
+        let request = ApiRequest {
+            system_prompt: vec!["system".to_string()],
+            messages: vec![ConversationMessage::user_text(
+                "请深入排查这个架构问题并给出重构方案",
+            )],
+        };
+
+        let route = resolve_deepseek_auto_route("deepseek-auto", &request, None)
+            .expect("deepseek-auto should route");
+
+        assert_eq!(route.selected_model, "deepseek-v4-pro");
+        assert_eq!(route.reasoning_effort.as_deref(), Some("max"));
+        assert!(route.signals.contains(&"complex_intent".to_string()));
+    }
+
+    #[test]
+    fn deepseek_auto_routes_tool_error_context_to_pro() {
+        let request = ApiRequest {
+            system_prompt: vec![],
+            messages: vec![
+                ConversationMessage::user_text("run the tests"),
+                ConversationMessage::tool_result(
+                    "tool-1",
+                    "bash",
+                    "test failed with panic: expected 1 got 2",
+                    true,
+                ),
+            ],
+        };
+
+        let route = resolve_deepseek_auto_route("deepseek-auto", &request, Some("high"))
+            .expect("deepseek-auto should route");
+
+        assert_eq!(route.selected_model, "deepseek-v4-pro");
+        assert_eq!(route.reasoning_effort.as_deref(), Some("high"));
+        assert!(route.signals.contains(&"tool_result_context".to_string()));
+    }
+
+    #[test]
+    fn deepseek_auto_does_not_route_explicit_models() {
+        let request = ApiRequest {
+            system_prompt: vec![],
+            messages: vec![ConversationMessage::user_text("debug this failure")],
+        };
+
+        assert!(resolve_deepseek_auto_route("deepseek-v4-flash", &request, None).is_none());
     }
 
     #[test]

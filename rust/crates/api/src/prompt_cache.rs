@@ -105,6 +105,38 @@ pub struct PromptCacheRecord {
     pub stats: PromptCacheStats,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestFingerprintDiagnostic {
+    pub request_hash: String,
+    pub fingerprint_version: u32,
+    pub model_hash: String,
+    pub system_hash: String,
+    pub tools_hash: String,
+    pub messages_hash: String,
+    pub system_chars: usize,
+    pub tool_count: usize,
+    pub message_count: usize,
+}
+
+#[must_use]
+pub fn request_fingerprint_diagnostic(request: &MessageRequest) -> RequestFingerprintDiagnostic {
+    let hashes = RequestFingerprints::from_request(request);
+    RequestFingerprintDiagnostic {
+        request_hash: request_hash_hex(request),
+        fingerprint_version: current_fingerprint_version(),
+        model_hash: format_hash(hashes.model),
+        system_hash: format_hash(hashes.system),
+        tools_hash: format_hash(hashes.tools),
+        messages_hash: format_hash(hashes.messages),
+        system_chars: request
+            .system
+            .as_ref()
+            .map_or(0, |value| value.chars().count()),
+        tool_count: request.tools.as_ref().map_or(0, Vec::len),
+        message_count: request.messages.len(),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PromptCache {
     inner: Arc<Mutex<PromptCacheInner>>,
@@ -464,6 +496,10 @@ fn hash_string(value: &str) -> u64 {
     stable_hash_bytes(value.as_bytes())
 }
 
+fn format_hash(hash: u64) -> String {
+    format!("{hash:016x}")
+}
+
 fn base_cache_root() -> PathBuf {
     if let Some(config_home) = std::env::var_os("CLAUDE_CONFIG_HOME") {
         return PathBuf::from(config_home)
@@ -693,6 +729,33 @@ mod tests {
         let second = request_hash_hex(&request);
         assert_eq!(first, second);
         assert!(first.starts_with(REQUEST_FINGERPRINT_PREFIX));
+    }
+
+    #[test]
+    fn request_fingerprint_diagnostic_tracks_stable_sections() {
+        let mut request = sample_request("stable");
+        request.system = Some("system prompt".to_string());
+        request.tools = Some(vec![crate::types::ToolDefinition {
+            name: "read_file".to_string(),
+            description: Some("Read a file".to_string()),
+            input_schema: serde_json::json!({"type": "object"}),
+        }]);
+
+        let first = super::request_fingerprint_diagnostic(&request);
+        let second = super::request_fingerprint_diagnostic(&request);
+
+        assert_eq!(first, second);
+        assert_eq!(
+            first.fingerprint_version,
+            super::current_fingerprint_version()
+        );
+        assert_eq!(first.system_chars, "system prompt".chars().count());
+        assert_eq!(first.tool_count, 1);
+        assert_eq!(first.message_count, 1);
+        assert!(first.request_hash.starts_with(REQUEST_FINGERPRINT_PREFIX));
+        assert_eq!(first.system_hash.len(), 16);
+        assert_eq!(first.tools_hash.len(), 16);
+        assert_eq!(first.messages_hash.len(), 16);
     }
 
     fn sample_request(text: &str) -> MessageRequest {

@@ -40,6 +40,8 @@ pub enum AssistantEvent {
     },
     Usage(TokenUsage),
     PromptCache(PromptCacheEvent),
+    PromptCacheDiagnostic(PromptCacheDiagnostic),
+    ModelRoute(ModelRouteEvent),
     MessageStop,
 }
 
@@ -51,6 +53,33 @@ pub struct PromptCacheEvent {
     pub previous_cache_read_input_tokens: u32,
     pub current_cache_read_input_tokens: u32,
     pub token_drop: u32,
+}
+
+/// Request fingerprint telemetry used to diagnose provider prompt-cache
+/// stability without changing prompt assembly order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptCacheDiagnostic {
+    pub provider: String,
+    pub model: String,
+    pub request_hash: String,
+    pub fingerprint_version: u32,
+    pub model_hash: String,
+    pub system_hash: String,
+    pub tools_hash: String,
+    pub messages_hash: String,
+    pub system_chars: usize,
+    pub tool_count: usize,
+    pub message_count: usize,
+}
+
+/// Model routing telemetry for explicit auto profiles.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelRouteEvent {
+    pub profile: String,
+    pub selected_model: String,
+    pub reasoning_effort: Option<String>,
+    pub reason: String,
+    pub signals: Vec<String>,
 }
 
 /// Non-streaming message response.
@@ -129,6 +158,8 @@ pub struct TurnSummary {
     pub assistant_messages: Vec<ConversationMessage>,
     pub tool_results: Vec<ConversationMessage>,
     pub prompt_cache_events: Vec<PromptCacheEvent>,
+    pub prompt_cache_diagnostics: Vec<PromptCacheDiagnostic>,
+    pub model_routes: Vec<ModelRouteEvent>,
     pub iterations: usize,
     pub usage: TokenUsage,
     pub auto_compaction: Option<AutoCompactionEvent>,
@@ -371,6 +402,8 @@ where
         let mut assistant_messages = Vec::new();
         let mut tool_results = Vec::new();
         let mut prompt_cache_events = Vec::new();
+        let mut prompt_cache_diagnostics = Vec::new();
+        let mut model_routes = Vec::new();
         let mut iterations = 0;
 
         loop {
@@ -408,18 +441,25 @@ where
                     return Err(error);
                 }
             };
-            let (assistant_message, usage, turn_prompt_cache_events) =
-                match build_assistant_message(events) {
-                    Ok(result) => result,
-                    Err(error) => {
-                        self.record_turn_failed(iterations, &error);
-                        return Err(error);
-                    }
-                };
+            let (
+                assistant_message,
+                usage,
+                turn_prompt_cache_events,
+                turn_prompt_cache_diagnostics,
+                turn_model_routes,
+            ) = match build_assistant_message(events) {
+                Ok(result) => result,
+                Err(error) => {
+                    self.record_turn_failed(iterations, &error);
+                    return Err(error);
+                }
+            };
             if let Some(usage) = usage {
                 self.usage_tracker.record(usage);
             }
             prompt_cache_events.extend(turn_prompt_cache_events);
+            prompt_cache_diagnostics.extend(turn_prompt_cache_diagnostics);
+            model_routes.extend(turn_model_routes);
             let pending_tool_uses = assistant_message
                 .blocks
                 .iter()
@@ -553,6 +593,8 @@ where
             assistant_messages,
             tool_results,
             prompt_cache_events,
+            prompt_cache_diagnostics,
+            model_routes,
             iterations,
             usage: self.usage_tracker.cumulative_usage(),
             auto_compaction,
@@ -790,6 +832,14 @@ where
             "prompt_cache_events".to_string(),
             Value::from(summary.prompt_cache_events.len() as u64),
         );
+        attributes.insert(
+            "prompt_cache_diagnostics".to_string(),
+            Value::from(summary.prompt_cache_diagnostics.len() as u64),
+        );
+        attributes.insert(
+            "model_routes".to_string(),
+            Value::from(summary.model_routes.len() as u64),
+        );
         session_tracer.record("turn_completed", attributes);
     }
 
@@ -830,6 +880,8 @@ fn build_assistant_message(
         ConversationMessage,
         Option<TokenUsage>,
         Vec<PromptCacheEvent>,
+        Vec<PromptCacheDiagnostic>,
+        Vec<ModelRouteEvent>,
     ),
     RuntimeError,
 > {
@@ -837,6 +889,8 @@ fn build_assistant_message(
     let mut reasoning_content = String::new();
     let mut blocks = Vec::new();
     let mut prompt_cache_events = Vec::new();
+    let mut prompt_cache_diagnostics = Vec::new();
+    let mut model_routes = Vec::new();
     let mut finished = false;
     let mut usage = None;
 
@@ -850,6 +904,10 @@ fn build_assistant_message(
             }
             AssistantEvent::Usage(value) => usage = Some(value),
             AssistantEvent::PromptCache(event) => prompt_cache_events.push(event),
+            AssistantEvent::PromptCacheDiagnostic(diagnostic) => {
+                prompt_cache_diagnostics.push(diagnostic);
+            }
+            AssistantEvent::ModelRoute(route) => model_routes.push(route),
             AssistantEvent::MessageStop => {
                 finished = true;
             }
@@ -876,6 +934,8 @@ fn build_assistant_message(
         },
         usage,
         prompt_cache_events,
+        prompt_cache_diagnostics,
+        model_routes,
     ))
 }
 
@@ -950,8 +1010,9 @@ impl ToolExecutor for StaticToolExecutor {
 mod tests {
     use super::{
         build_assistant_message, parse_auto_compaction_threshold, ApiClient, ApiRequest,
-        AssistantEvent, AutoCompactionEvent, ConversationRuntime, PromptCacheEvent, RuntimeError,
-        StaticToolExecutor, ToolExecutor, DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD,
+        AssistantEvent, AutoCompactionEvent, ConversationRuntime, ModelRouteEvent,
+        PromptCacheDiagnostic, PromptCacheEvent, RuntimeError, StaticToolExecutor, ToolExecutor,
+        DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD,
     };
     use crate::compact::{CompactionConfig, CompactionMode};
     use crate::config::{RuntimeFeatureConfig, RuntimeHookConfig};
@@ -1867,7 +1928,7 @@ mod tests {
             AssistantEvent::MessageStop,
         ];
 
-        let (message, usage, prompt_cache_events) =
+        let (message, usage, prompt_cache_events, prompt_cache_diagnostics, model_routes) =
             build_assistant_message(events).expect("reasoning-only messages should be preserved");
 
         assert_eq!(message.role, crate::session::MessageRole::Assistant);
@@ -1875,6 +1936,60 @@ mod tests {
         assert_eq!(message.reasoning_content.as_deref(), Some("step 1"));
         assert!(usage.is_none());
         assert!(prompt_cache_events.is_empty());
+        assert!(prompt_cache_diagnostics.is_empty());
+        assert!(model_routes.is_empty());
+    }
+
+    #[test]
+    fn build_assistant_message_collects_prompt_cache_diagnostics() {
+        let diagnostic = PromptCacheDiagnostic {
+            provider: "DeepSeek".to_string(),
+            model: "deepseek-v4-pro".to_string(),
+            request_hash: "v1-abc".to_string(),
+            fingerprint_version: 1,
+            model_hash: "model".to_string(),
+            system_hash: "system".to_string(),
+            tools_hash: "tools".to_string(),
+            messages_hash: "messages".to_string(),
+            system_chars: 12,
+            tool_count: 3,
+            message_count: 4,
+        };
+        let events = vec![
+            AssistantEvent::PromptCacheDiagnostic(diagnostic.clone()),
+            AssistantEvent::TextDelta("done".to_string()),
+            AssistantEvent::MessageStop,
+        ];
+
+        let (_message, _usage, prompt_cache_events, prompt_cache_diagnostics, model_routes) =
+            build_assistant_message(events).expect("diagnostic events should not affect content");
+
+        assert!(prompt_cache_events.is_empty());
+        assert_eq!(prompt_cache_diagnostics, vec![diagnostic]);
+        assert!(model_routes.is_empty());
+    }
+
+    #[test]
+    fn build_assistant_message_collects_model_route_events() {
+        let route = ModelRouteEvent {
+            profile: "deepseek-auto".to_string(),
+            selected_model: "deepseek-v4-pro".to_string(),
+            reasoning_effort: Some("max".to_string()),
+            reason: "complex task or tool/error context".to_string(),
+            signals: vec!["error_context".to_string()],
+        };
+        let events = vec![
+            AssistantEvent::ModelRoute(route.clone()),
+            AssistantEvent::TextDelta("done".to_string()),
+            AssistantEvent::MessageStop,
+        ];
+
+        let (_message, _usage, prompt_cache_events, prompt_cache_diagnostics, model_routes) =
+            build_assistant_message(events).expect("route events should not affect content");
+
+        assert!(prompt_cache_events.is_empty());
+        assert!(prompt_cache_diagnostics.is_empty());
+        assert_eq!(model_routes, vec![route]);
     }
 
     #[test]

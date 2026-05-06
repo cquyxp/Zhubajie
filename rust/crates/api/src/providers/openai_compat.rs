@@ -514,12 +514,7 @@ impl StreamState {
         }
 
         if let Some(usage) = chunk.usage {
-            self.usage = Some(Usage {
-                input_tokens: usage.prompt_tokens,
-                cache_creation_input_tokens: 0,
-                cache_read_input_tokens: 0,
-                output_tokens: usage.completion_tokens,
-            });
+            self.usage = Some(normalize_usage(&usage));
         }
 
         for choice in chunk.choices {
@@ -759,6 +754,10 @@ struct OpenAiUsage {
     prompt_tokens: u32,
     #[serde(default)]
     completion_tokens: u32,
+    #[serde(default)]
+    prompt_cache_hit_tokens: Option<u32>,
+    #[serde(default)]
+    prompt_cache_miss_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -910,8 +909,10 @@ pub fn build_chat_completion_request(
             "content": system,
         }));
     }
-    // Strip routing prefix (e.g., "openai/gpt-4" → "gpt-4") for the wire.
-    let wire_model = strip_routing_prefix(&request.model);
+    // Resolve local aliases/profiles and strip routing prefix
+    // (e.g., "openai/gpt-4" -> "gpt-4") for the wire.
+    let resolved_model = super::resolve_model_alias(&request.model);
+    let wire_model = strip_routing_prefix(&resolved_model);
     for message in &request.messages {
         messages.extend(translate_message(message, wire_model));
     }
@@ -978,12 +979,17 @@ pub fn build_chat_completion_request(
     // reasoning_effort / thinking budget.
     // OpenAI o-series uses `reasoning_effort`; DeepSeek V4 uses `thinking`.
     // Both control how many tokens the model spends on chain-of-thought.
-    if let Some(effort) = &request.reasoning_effort {
-        if wire_model.to_ascii_lowercase().starts_with("deepseek") {
+    let reasoning_effort = request
+        .reasoning_effort
+        .as_deref()
+        .or_else(|| default_reasoning_effort_for_profile(&request.model));
+    if let Some(effort) = reasoning_effort {
+        if super::model_capabilities(&wire_model).supports_thinking {
             // DeepSeek V4 thinking schema: {"type":"enabled","budget_tokens":N}
             // Map effort levels to reasonable token budgets.
-            let budget = match effort.as_str() {
+            let budget = match effort {
                 "low" => 2_000,
+                "max" => 32_000,
                 "high" => 16_000,
                 _ => 8_000, // medium / default
             };
@@ -1023,7 +1029,7 @@ pub fn translate_message(message: &InputMessage, model: &str) -> Vec<Value> {
     // DeepSeek models require reasoning_content to be echoed back in
     // assistant messages when the model previously responded in thinking
     // mode. Check the wire model name to decide whether to include it.
-    let is_deepseek = model.to_ascii_lowercase().starts_with("deepseek");
+    let requires_reasoning_replay = super::model_capabilities(model).requires_reasoning_replay;
     match message.role.as_str() {
         "assistant" => {
             let mut text = String::new();
@@ -1057,7 +1063,7 @@ pub fn translate_message(message: &InputMessage, model: &str) -> Vec<Value> {
                 }
                 // DeepSeek: include reasoning_content so the API doesn't reject
                 // with "reasoning_content must be passed back" (400 error).
-                if is_deepseek {
+                if requires_reasoning_replay {
                     if let Some(reasoning) = reasoning {
                         msg["reasoning_content"] = json!(reasoning);
                     }
@@ -1295,20 +1301,43 @@ fn normalize_response(
             .finish_reason
             .map(|value| normalize_finish_reason(&value)),
         stop_sequence: None,
-        usage: Usage {
-            input_tokens: response
-                .usage
-                .as_ref()
-                .map_or(0, |usage| usage.prompt_tokens),
-            cache_creation_input_tokens: 0,
-            cache_read_input_tokens: 0,
-            output_tokens: response
-                .usage
-                .as_ref()
-                .map_or(0, |usage| usage.completion_tokens),
-        },
+        usage: response
+            .usage
+            .as_ref()
+            .map_or_else(Usage::default, normalize_usage),
         request_id: None,
     })
+}
+
+fn normalize_usage(usage: &OpenAiUsage) -> Usage {
+    let has_prompt_cache_breakdown =
+        usage.prompt_cache_hit_tokens.is_some() || usage.prompt_cache_miss_tokens.is_some();
+    if has_prompt_cache_breakdown {
+        let cache_read_input_tokens = usage.prompt_cache_hit_tokens.unwrap_or(0);
+        let input_tokens = usage
+            .prompt_cache_miss_tokens
+            .unwrap_or_else(|| usage.prompt_tokens.saturating_sub(cache_read_input_tokens));
+        return Usage {
+            input_tokens,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens,
+            output_tokens: usage.completion_tokens,
+        };
+    }
+
+    Usage {
+        input_tokens: usage.prompt_tokens,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        output_tokens: usage.completion_tokens,
+    }
+}
+
+fn default_reasoning_effort_for_profile(model: &str) -> Option<&'static str> {
+    match model.trim().to_ascii_lowercase().as_str() {
+        "deepseek-agent" => Some("max"),
+        _ => None,
+    }
 }
 
 fn parse_tool_arguments(arguments: &str) -> Value {
@@ -2196,6 +2225,130 @@ mod tests {
             normalized.content[0],
             crate::types::OutputContentBlock::Text { ref text } if text == "Visible answer"
         ));
+    }
+
+    #[test]
+    fn normalize_response_maps_deepseek_prompt_cache_usage() {
+        let response: super::ChatCompletionResponse = serde_json::from_value(json!({
+            "id": "chatcmpl_cache",
+            "model": "deepseek-v4-pro",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "Cached answer"
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 1200,
+                "completion_tokens": 40,
+                "prompt_cache_hit_tokens": 900,
+                "prompt_cache_miss_tokens": 300
+            }
+        }))
+        .expect("chat completion response should deserialize");
+
+        let normalized = super::normalize_response("deepseek-v4-pro", response)
+            .expect("normalization should succeed");
+
+        assert_eq!(normalized.usage.input_tokens, 300);
+        assert_eq!(normalized.usage.cache_read_input_tokens, 900);
+        assert_eq!(normalized.usage.cache_creation_input_tokens, 0);
+        assert_eq!(normalized.usage.output_tokens, 40);
+    }
+
+    #[test]
+    fn streaming_usage_maps_deepseek_prompt_cache_usage() {
+        let chunk: super::ChatCompletionChunk = serde_json::from_value(json!({
+            "id": "chatcmpl_cache_stream",
+            "model": "deepseek-v4-pro",
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 1200,
+                "completion_tokens": 40,
+                "prompt_cache_hit_tokens": 900,
+                "prompt_cache_miss_tokens": 300
+            }
+        }))
+        .expect("chat completion chunk should deserialize");
+        let mut state = super::StreamState::new("deepseek-v4-pro".to_string());
+
+        let events = state.ingest_chunk(chunk).expect("chunk should ingest");
+
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, crate::types::StreamEvent::MessageStart(_))),
+            "usage-only chunks should still start the normalized message"
+        );
+        let usage = state.usage.expect("usage should be captured");
+        assert_eq!(usage.input_tokens, 300);
+        assert_eq!(usage.cache_read_input_tokens, 900);
+        assert_eq!(usage.output_tokens, 40);
+    }
+
+    #[test]
+    fn deepseek_reasoning_effort_max_maps_to_thinking_budget() {
+        let request = MessageRequest {
+            model: "deepseek-v4-pro".to_string(),
+            max_tokens: 100,
+            messages: vec![InputMessage::user_text("think deeply")],
+            reasoning_effort: Some("max".to_string()),
+            stream: false,
+            ..Default::default()
+        };
+
+        let payload =
+            super::build_chat_completion_request(&request, OpenAiCompatConfig::deepseek());
+
+        assert_eq!(
+            payload["thinking"],
+            json!({"type": "enabled", "budget_tokens": 32_000})
+        );
+        assert!(
+            payload.get("reasoning_effort").is_none(),
+            "DeepSeek should use provider-specific thinking, not reasoning_effort"
+        );
+    }
+
+    #[test]
+    fn deepseek_agent_profile_resolves_model_and_defaults_to_max_thinking() {
+        let request = MessageRequest {
+            model: "deepseek-agent".to_string(),
+            max_tokens: 100,
+            messages: vec![InputMessage::user_text("work like an agent")],
+            stream: false,
+            ..Default::default()
+        };
+
+        let payload =
+            super::build_chat_completion_request(&request, OpenAiCompatConfig::deepseek());
+
+        assert_eq!(payload["model"], json!("deepseek-v4-pro"));
+        assert_eq!(
+            payload["thinking"],
+            json!({"type": "enabled", "budget_tokens": 32_000})
+        );
+    }
+
+    #[test]
+    fn deepseek_fast_profile_resolves_model_without_default_thinking() {
+        let request = MessageRequest {
+            model: "deepseek-fast".to_string(),
+            max_tokens: 100,
+            messages: vec![InputMessage::user_text("quick answer")],
+            stream: false,
+            ..Default::default()
+        };
+
+        let payload =
+            super::build_chat_completion_request(&request, OpenAiCompatConfig::deepseek());
+
+        assert_eq!(payload["model"], json!("deepseek-v4-flash"));
+        assert!(
+            payload.get("thinking").is_none(),
+            "fast profile should not enable thinking by default"
+        );
     }
 
     #[test]

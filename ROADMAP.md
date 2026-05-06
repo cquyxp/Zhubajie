@@ -34,6 +34,45 @@
 
 ## 近期优先事项
 
+### 高优先级 — DeepSeek V4 适配与长上下文效率
+
+DeepSeek 优化按“先观测、再能力建模、最后自动策略”的顺序推进，避免把模型论文特性机械映射到 CLI 行为。
+
+1. **[x] DeepSeek usage / cache 字段映射**
+   - 在 OpenAI-compatible 响应解析中识别 DeepSeek `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`
+   - 映射到内部 `Usage.cache_read_input_tokens` 与 input/cache miss 统计
+   - 为非流式和流式 usage 增加回归测试，保证 `/usage`、`/cost`、缓存命中诊断可信
+
+2. **[x] DeepSeek 专属 capability 元数据**
+   - 拆分 `supports_thinking`、`requires_reasoning_replay`、`reports_prompt_cache_usage`
+   - 不把 DeepSeek V4 粗暴标记为 OpenAI o-series 式 reasoning model，避免误剥 temperature/top_p
+   - 支持 DeepSeek `thinking` budget 的 `max` 档位
+
+3. **[x] DeepSeek 请求稳定性与缓存诊断**
+   - 输出 system/tools/messages fingerprint，定位缓存断点
+   - 优先稳定 tool definitions、system prompt、project memory 等前缀块
+   - 在有观测数据前不默认重排 prompt，降低行为回归风险
+
+4. **[x] DeepSeek model profiles**
+   - [x] `deepseek-fast`：`deepseek-v4-flash`，低延迟日常任务
+   - [x] `deepseek-agent`：`deepseek-v4-pro` + max thinking，复杂代码/跨文件任务
+   - [x] `deepseek-auto`：显式启用的自动路由，JSON/trace 记录 route decision
+
+5. **[ ] 模型感知 compact policy**
+   - DeepSeek 1M 上下文下推迟强压缩，但不无限保留原文
+   - 保留最近工具结果、关键文件变更、待办状态；压缩陈旧讨论
+   - 建议阈值：60%-70% context 做摘要，85% 附近强压缩
+
+6. **[ ] 只读工具并行化**
+   - 仅并行 `ReadFile`、`GlobSearch`、`GrepSearch` 等纯读工具
+   - hooks/permissions 按原顺序评估，结果按原 tool_use 顺序写回 session
+   - Bash、写文件、MCP 默认保持串行
+
+7. **[ ] 可配置价格元数据**
+   - 内置价格只作为 fallback
+   - 支持用户配置模型价格与缓存命中价格
+   - `/usage` 明确标注 estimated，避免过期价格造成误导
+
 ### 高优先级 — 拆分 main.rs (12,714行 → ~7,000行)
 
 main.rs 当前是一个巨型单体文件，涵盖 6 个独立职责域。按以下顺序逐步提取：

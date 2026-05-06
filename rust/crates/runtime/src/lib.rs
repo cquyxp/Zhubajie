@@ -106,8 +106,9 @@ pub use config_validate::{
 };
 pub use conversation::{
     auto_compaction_threshold_from_env, ApiClient, ApiRequest, AssistantEvent, AutoCompactionEvent,
-    ConversationRuntime, MessageResponse, PromptCacheEvent, RuntimeError, StaticToolExecutor,
-    ToolError, ToolExecutor, TurnSummary, DEFAULT_SUBAGENT_STALENESS_TIMEOUT,
+    ConversationRuntime, MessageResponse, ModelRouteEvent, PromptCacheDiagnostic, PromptCacheEvent,
+    RuntimeError, StaticToolExecutor, ToolError, ToolExecutor, TurnSummary,
+    DEFAULT_SUBAGENT_STALENESS_TIMEOUT,
 };
 pub use error_guide::{ErrorGuide, GuidedError, QuickstartGuide};
 pub use file_ops::{

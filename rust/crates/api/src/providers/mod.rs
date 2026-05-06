@@ -26,6 +26,13 @@ pub struct ProviderCapabilities {
     /// Model rejects the `is_error` field in tool result content blocks.
     /// Kimi models via DashScope are the known case.
     pub rejects_is_error_field: bool,
+    /// Model supports a provider-specific thinking budget in the request.
+    pub supports_thinking: bool,
+    /// Model requires previous reasoning content to be replayed in follow-up
+    /// assistant messages.
+    pub requires_reasoning_replay: bool,
+    /// Provider reports prompt-cache hit/miss token counters.
+    pub reports_prompt_cache_usage: bool,
 }
 
 impl ProviderCapabilities {
@@ -35,6 +42,9 @@ impl ProviderCapabilities {
         Self {
             is_reasoning_default: false,
             rejects_is_error_field: false,
+            supports_thinking: false,
+            requires_reasoning_replay: false,
+            reports_prompt_cache_usage: false,
         }
     }
 
@@ -44,6 +54,23 @@ impl ProviderCapabilities {
         Self {
             is_reasoning_default: true,
             rejects_is_error_field: false,
+            supports_thinking: false,
+            requires_reasoning_replay: false,
+            reports_prompt_cache_usage: false,
+        }
+    }
+
+    /// DeepSeek V4 capability set. It supports a provider-specific thinking
+    /// budget and reasoning replay, but should not be treated like OpenAI
+    /// o-series reasoning models because tuning parameters are still separate.
+    #[must_use]
+    pub const fn deepseek_v4() -> Self {
+        Self {
+            is_reasoning_default: false,
+            rejects_is_error_field: false,
+            supports_thinking: true,
+            requires_reasoning_replay: true,
+            reports_prompt_cache_usage: true,
         }
     }
 }
@@ -173,7 +200,40 @@ const MODEL_REGISTRY: &[(&str, ProviderMetadata)] = &[
             ProviderCapabilities {
                 is_reasoning_default: false,
                 rejects_is_error_field: true,
+                supports_thinking: false,
+                requires_reasoning_replay: false,
+                reports_prompt_cache_usage: false,
             },
+        ),
+    ),
+    (
+        "deepseek-auto",
+        ProviderMetadata::new(
+            ProviderKind::OpenAi,
+            "DEEPSEEK_API_KEY",
+            "DEEPSEEK_BASE_URL",
+            openai_compat::DEFAULT_DEEPSEEK_BASE_URL,
+            ProviderCapabilities::deepseek_v4(),
+        ),
+    ),
+    (
+        "deepseek-fast",
+        ProviderMetadata::new(
+            ProviderKind::OpenAi,
+            "DEEPSEEK_API_KEY",
+            "DEEPSEEK_BASE_URL",
+            openai_compat::DEFAULT_DEEPSEEK_BASE_URL,
+            ProviderCapabilities::deepseek_v4(),
+        ),
+    ),
+    (
+        "deepseek-agent",
+        ProviderMetadata::new(
+            ProviderKind::OpenAi,
+            "DEEPSEEK_API_KEY",
+            "DEEPSEEK_BASE_URL",
+            openai_compat::DEFAULT_DEEPSEEK_BASE_URL,
+            ProviderCapabilities::deepseek_v4(),
         ),
     ),
     (
@@ -183,7 +243,7 @@ const MODEL_REGISTRY: &[(&str, ProviderMetadata)] = &[
             "DEEPSEEK_API_KEY",
             "DEEPSEEK_BASE_URL",
             openai_compat::DEFAULT_DEEPSEEK_BASE_URL,
-            ProviderCapabilities::standard(),
+            ProviderCapabilities::deepseek_v4(),
         ),
     ),
     (
@@ -193,7 +253,7 @@ const MODEL_REGISTRY: &[(&str, ProviderMetadata)] = &[
             "DEEPSEEK_API_KEY",
             "DEEPSEEK_BASE_URL",
             openai_compat::DEFAULT_DEEPSEEK_BASE_URL,
-            ProviderCapabilities::standard(),
+            ProviderCapabilities::deepseek_v4(),
         ),
     ),
 ];
@@ -207,6 +267,9 @@ pub fn resolve_model_alias(model: &str) -> String {
     let lower = match lower.as_str() {
         "deepseek-chat" => "deepseek-v4-flash",
         "deepseek-reasoner" => "deepseek-v4-pro",
+        "deepseek-auto" => "deepseek-auto",
+        "deepseek-fast" => "deepseek-v4-flash",
+        "deepseek-agent" => "deepseek-v4-pro",
         other => other,
     };
     MODEL_REGISTRY
@@ -227,6 +290,9 @@ pub fn resolve_model_alias(model: &str) -> String {
                 },
                 ProviderKind::OpenAi => match *alias {
                     "kimi" => "kimi-k2.5",
+                    "deepseek-auto" => "deepseek-auto",
+                    "deepseek-v4-flash" => "deepseek-v4-flash",
+                    "deepseek-v4-pro" => "deepseek-v4-pro",
                     _ => trimmed,
                 },
             })
@@ -308,6 +374,9 @@ pub fn metadata_for_model(model: &str) -> Option<ProviderMetadata> {
             ProviderCapabilities {
                 is_reasoning_default: false,
                 rejects_is_error_field: true,
+                supports_thinking: false,
+                requires_reasoning_replay: false,
+                reports_prompt_cache_usage: false,
             },
         ));
     }
@@ -320,7 +389,7 @@ pub fn metadata_for_model(model: &str) -> Option<ProviderMetadata> {
             "DEEPSEEK_API_KEY",
             "DEEPSEEK_BASE_URL",
             openai_compat::DEFAULT_DEEPSEEK_BASE_URL,
-            ProviderCapabilities::standard(),
+            ProviderCapabilities::deepseek_v4(),
         ));
     }
     None
@@ -392,12 +461,18 @@ fn caps_by_name(model: &str) -> ProviderCapabilities {
         return ProviderCapabilities {
             is_reasoning_default: true,
             rejects_is_error_field: false,
+            supports_thinking: false,
+            requires_reasoning_replay: false,
+            reports_prompt_cache_usage: false,
         };
     }
     if canonical.starts_with("kimi") {
         return ProviderCapabilities {
             is_reasoning_default: false,
             rejects_is_error_field: true,
+            supports_thinking: false,
+            requires_reasoning_replay: false,
+            reports_prompt_cache_usage: false,
         };
     }
 
@@ -733,6 +808,13 @@ mod tests {
         assert_eq!(resolve_model_alias("grok"), "grok-3");
         assert_eq!(resolve_model_alias("grok-mini"), "grok-3-mini");
         assert_eq!(resolve_model_alias("grok-2"), "grok-2");
+    }
+
+    #[test]
+    fn resolves_deepseek_profiles() {
+        assert_eq!(resolve_model_alias("deepseek-auto"), "deepseek-auto");
+        assert_eq!(resolve_model_alias("deepseek-fast"), "deepseek-v4-flash");
+        assert_eq!(resolve_model_alias("deepseek-agent"), "deepseek-v4-pro");
     }
 
     #[test]
@@ -1472,16 +1554,25 @@ NO_EQUALS_LINE
     }
 
     #[test]
-    fn deepseek_models_have_standard_capabilities() {
+    fn deepseek_models_have_deepseek_v4_capabilities() {
         for model in &["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat"] {
             let caps = super::model_capabilities(model);
             assert!(
                 !caps.is_reasoning_default,
-                "{model} should not be reasoning"
+                "{model} should not be OpenAI-style reasoning"
             );
             assert!(
                 !caps.rejects_is_error_field,
                 "{model} should not reject is_error"
+            );
+            assert!(caps.supports_thinking, "{model} should support thinking");
+            assert!(
+                caps.requires_reasoning_replay,
+                "{model} should require reasoning replay"
+            );
+            assert!(
+                caps.reports_prompt_cache_usage,
+                "{model} should report prompt cache usage"
             );
         }
     }

@@ -254,9 +254,9 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 let value = args
                     .get(index + 1)
                     .ok_or_else(|| "missing value for --reasoning-effort".to_string())?;
-                if !matches!(value.as_str(), "low" | "medium" | "high") {
+                if !is_valid_reasoning_effort(value) {
                     return Err(format!(
-                        "invalid value for --reasoning-effort: '{value}'; must be low, medium, or high"
+                        "invalid value for --reasoning-effort: '{value}'; must be low, medium, high, or max"
                     ));
                 }
                 reasoning_effort = Some(value.clone());
@@ -264,9 +264,9 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
             }
             flag if flag.starts_with("--reasoning-effort=") => {
                 let value = &flag[19..];
-                if !matches!(value, "low" | "medium" | "high") {
+                if !is_valid_reasoning_effort(value) {
                     return Err(format!(
-                        "invalid value for --reasoning-effort: '{value}'; must be low, medium, or high"
+                        "invalid value for --reasoning-effort: '{value}'; must be low, medium, high, or max"
                     ));
                 }
                 reasoning_effort = Some(value.to_string());
@@ -791,8 +791,15 @@ pub(crate) fn resolve_model_alias(model: &str) -> &str {
         "opus" => "claude-opus-4-6",
         "sonnet" => "claude-sonnet-4-6",
         "haiku" => "claude-haiku-4-5-20251213",
+        "deepseek-auto" => "deepseek-auto",
+        "deepseek-fast" => "deepseek-v4-flash",
+        "deepseek-agent" => "deepseek-v4-pro",
         _ => model,
     }
+}
+
+fn is_valid_reasoning_effort(value: &str) -> bool {
+    matches!(value, "low" | "medium" | "high" | "max")
 }
 
 /// Resolve a model name through user-defined config aliases first, then fall
