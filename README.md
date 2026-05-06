@@ -120,11 +120,16 @@ Zhubajie/
 
 ## 模型别名
 
+启动时可用 `--model` 指定模型；进入交互模式后可用 `/model` 打开可选模型列表，或用 `/model <name>` 直接切换。
+
 | 别名 | 完整模型名 |
 |------|-----------|
 | `opus` | `claude-opus-4-6` |
 | `sonnet` | `claude-sonnet-4-6` |
 | `haiku` | `claude-haiku-4-5-20251213` |
+| `deepseek-auto` | 按请求自动路由到 `deepseek-v4-flash` 或 `deepseek-v4-pro` |
+| `deepseek-fast` | `deepseek-v4-flash` |
+| `deepseek-agent` | `deepseek-v4-pro` |
 | `grok` | `grok-3` |
 | `kimi` | `kimi-k2.5` |
 

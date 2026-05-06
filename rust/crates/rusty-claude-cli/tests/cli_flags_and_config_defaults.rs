@@ -59,7 +59,7 @@ fn resume_flag_loads_a_saved_session_and_dispatches_status() {
     assert_success(&output);
     let stdout = String::from_utf8(output.stdout).expect("stdout should be utf8");
     assert!(stdout.contains("Status"));
-    assert!(stdout.contains("Messages         1"));
+    assert!(stdout.contains("Activity         1 messages"));
     assert!(stdout.contains("Session          "));
     assert!(stdout.contains(session_path.to_str().expect("utf8 path")));
 

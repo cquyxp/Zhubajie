@@ -75,7 +75,7 @@ pub(crate) fn format_model_report(
     ));
     lines.push(String::new());
     lines.push("Usage".to_string());
-    lines.push("  Inspect the active model with /model".to_string());
+    lines.push("  Open the model picker with /model".to_string());
     lines.push("  Switch models with /model <name>".to_string());
     lines.join("\n")
 }

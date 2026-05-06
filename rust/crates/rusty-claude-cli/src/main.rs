@@ -729,6 +729,56 @@ struct ModelReportDetails {
     config_summary: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ModelPickerChoice {
+    label: &'static str,
+    model: &'static str,
+    description: &'static str,
+}
+
+const MODEL_PICKER_CHOICES: &[ModelPickerChoice] = &[
+    ModelPickerChoice {
+        label: "DeepSeek auto",
+        model: "deepseek-auto",
+        description: "route each request to Flash or Pro",
+    },
+    ModelPickerChoice {
+        label: "DeepSeek fast",
+        model: "deepseek-fast",
+        description: "low-latency daily work",
+    },
+    ModelPickerChoice {
+        label: "DeepSeek agent",
+        model: "deepseek-agent",
+        description: "complex coding with max thinking",
+    },
+    ModelPickerChoice {
+        label: "Claude Sonnet",
+        model: "sonnet",
+        description: "balanced default Claude model",
+    },
+    ModelPickerChoice {
+        label: "Claude Opus",
+        model: "opus",
+        description: "highest-capability Claude profile",
+    },
+    ModelPickerChoice {
+        label: "Claude Haiku",
+        model: "haiku",
+        description: "fast Claude profile",
+    },
+    ModelPickerChoice {
+        label: "Grok",
+        model: "grok",
+        description: "xAI Grok profile",
+    },
+    ModelPickerChoice {
+        label: "Qwen Plus",
+        model: "qwen-plus",
+        description: "DashScope Qwen model",
+    },
+];
+
 fn model_report_details(
     model: &str,
     runtime_config: &runtime::RuntimeConfig,
@@ -788,6 +838,60 @@ fn describe_model_routing(
         .max_by_key(|(prefix, _)| prefix.len());
 
     matched.map(|(prefix, provider_id)| format!("prefix {prefix}* -> {provider_id}"))
+}
+
+fn format_model_picker(current_model: &str, choices: &[ModelPickerChoice]) -> String {
+    let mut lines = Vec::with_capacity(choices.len() + 5);
+    lines.push("Available models".to_string());
+    for (index, choice) in choices.iter().enumerate() {
+        let resolved = resolve_model_alias_with_config(choice.model);
+        let marker = if resolved == current_model || choice.model == current_model {
+            "*"
+        } else {
+            " "
+        };
+        lines.push(format!(
+            "  {marker} {:>2}. {:<16} {:<18} {}",
+            index + 1,
+            choice.label,
+            choice.model,
+            choice.description
+        ));
+    }
+    lines.push(String::new());
+    lines.push("Select model by number or name, Enter/q to cancel.".to_string());
+    lines.join("\n")
+}
+
+fn parse_model_picker_selection(
+    input: &str,
+    choices: &[ModelPickerChoice],
+) -> Result<Option<String>, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("q")
+        || trimmed.eq_ignore_ascii_case("quit")
+    {
+        return Ok(None);
+    }
+
+    if let Ok(index) = trimmed.parse::<usize>() {
+        if index == 0 {
+            return Err("model selection out of range: 0".to_string());
+        }
+        return choices
+            .get(index - 1)
+            .map(|choice| Some(choice.model.to_string()))
+            .ok_or_else(|| format!("model selection out of range: {index}"));
+    }
+
+    if let Some(choice) = choices.iter().find(|choice| {
+        choice.model.eq_ignore_ascii_case(trimmed) || choice.label.eq_ignore_ascii_case(trimmed)
+    }) {
+        return Ok(Some(choice.model.to_string()));
+    }
+
+    Ok(Some(trimmed.to_string()))
 }
 
 #[allow(clippy::struct_field_names)]
@@ -2739,7 +2843,23 @@ impl LiveCli {
                     self.runtime.usage().turns(),
                 )
             );
-            return Ok(false);
+            if !io::stdin().is_terminal() {
+                return Ok(false);
+            }
+            println!();
+            println!("{}", format_model_picker(&self.model, MODEL_PICKER_CHOICES));
+            print!("model> ");
+            io::stdout().flush()?;
+
+            let mut selection = String::new();
+            io::stdin().read_line(&mut selection)?;
+            let Some(selected_model) =
+                parse_model_picker_selection(&selection, MODEL_PICKER_CHOICES)?
+            else {
+                println!("Model unchanged.");
+                return Ok(false);
+            };
+            return self.set_model(Some(selected_model));
         };
 
         let model = resolve_model_alias_with_config(&model);
@@ -7510,24 +7630,25 @@ mod tests {
         filter_tool_specs, format_bughunter_report, format_commit_preflight_report,
         format_commit_skipped_report, format_compact_report, format_connected_line,
         format_cost_report, format_history_timestamp, format_internal_prompt_progress_line,
-        format_issue_report, format_model_report, format_model_switch_report,
+        format_issue_report, format_model_picker, format_model_report, format_model_switch_report,
         format_permissions_report, format_permissions_switch_report, format_pr_report,
         format_resume_report, format_status_report, format_tool_call_start, format_tool_result,
         format_ultraplan_report, format_unknown_slash_command,
         format_unknown_slash_command_message, format_user_visible_api_error,
         merge_prompt_with_stdin, normalize_permission_mode, parse_args, parse_export_args,
         parse_git_status_branch, parse_git_status_metadata_for, parse_git_workspace_summary,
-        parse_history_count, permission_policy, print_help_to, push_output_block,
-        render_config_json, render_config_report, render_diff_report, render_diff_report_for,
-        render_memory_report, render_prompt_history_report, render_repl_help, render_resume_usage,
-        render_session_markdown, repl_prompt_prefix, repl_status_line, resolve_deepseek_auto_route,
-        resolve_model_alias, resolve_model_alias_with_config, resolve_repl_model,
-        resolve_session_reference, response_to_events, resume_supported_slash_commands,
-        run_resume_command, short_tool_id, slash_command_completion_candidates_with_sessions,
-        status_context, summarize_tool_payload_for_markdown, try_resolve_bare_skill_prompt,
-        validate_no_args, write_mcp_server_fixture, CliAction, CliOutputFormat, CliToolExecutor,
-        GitWorkspaceSummary, InternalPromptProgressEvent, InternalPromptProgressState, LiveCli,
-        LocalHelpTopic, PromptHistoryEntry, SlashCommand, StatusUsage, DEFAULT_MODEL,
+        parse_history_count, parse_model_picker_selection, permission_policy, print_help_to,
+        push_output_block, render_config_json, render_config_report, render_diff_report,
+        render_diff_report_for, render_memory_report, render_prompt_history_report,
+        render_repl_help, render_resume_usage, render_session_markdown, repl_prompt_prefix,
+        repl_status_line, resolve_deepseek_auto_route, resolve_model_alias,
+        resolve_model_alias_with_config, resolve_repl_model, resolve_session_reference,
+        response_to_events, resume_supported_slash_commands, run_resume_command, short_tool_id,
+        slash_command_completion_candidates_with_sessions, status_context,
+        summarize_tool_payload_for_markdown, try_resolve_bare_skill_prompt, validate_no_args,
+        write_mcp_server_fixture, CliAction, CliOutputFormat, CliToolExecutor, GitWorkspaceSummary,
+        InternalPromptProgressEvent, InternalPromptProgressState, LiveCli, LocalHelpTopic,
+        ModelPickerChoice, PromptHistoryEntry, SlashCommand, StatusUsage, DEFAULT_MODEL,
         LATEST_SESSION_REFERENCE, OFFICIAL_REPO_SLUG, STUB_COMMANDS, VERBOSE_MODE,
     };
     use api::{ApiError, MessageResponse, OutputContentBlock, Usage};
@@ -9204,7 +9325,7 @@ mod tests {
         assert!(help.contains("/clear [--confirm]"));
         assert!(help.contains("/cost"));
         assert!(help.contains("/resume <session-path>"));
-        assert!(help.contains("/config [env|hooks|model|plugins]"));
+        assert!(help.contains("/config [env|hooks|model|plugins|schema]"));
         assert!(help.contains("/mcp [list|show <server>|help]"));
         assert!(help.contains("/memory"));
         assert!(help.contains("/init"));
@@ -9489,6 +9610,65 @@ mod tests {
         assert!(report.contains("Previous         claude-sonnet"));
         assert!(report.contains("Current          claude-opus"));
         assert!(report.contains("Preserved msgs   9"));
+    }
+
+    #[test]
+    fn model_picker_marks_current_model_and_lists_choices() {
+        let choices = [
+            ModelPickerChoice {
+                label: "DeepSeek auto",
+                model: "deepseek-auto",
+                description: "route each request",
+            },
+            ModelPickerChoice {
+                label: "Claude Sonnet",
+                model: "sonnet",
+                description: "balanced",
+            },
+        ];
+
+        let picker = format_model_picker("deepseek-auto", &choices);
+
+        assert!(picker.contains("Available models"));
+        assert!(picker.contains("*  1. DeepSeek auto"));
+        assert!(picker.contains("   2. Claude Sonnet"));
+        assert!(picker.contains("Enter/q to cancel"));
+    }
+
+    #[test]
+    fn model_picker_selection_accepts_number_cancel_and_literal_model() {
+        let choices = [
+            ModelPickerChoice {
+                label: "DeepSeek auto",
+                model: "deepseek-auto",
+                description: "route each request",
+            },
+            ModelPickerChoice {
+                label: "Claude Sonnet",
+                model: "sonnet",
+                description: "balanced",
+            },
+        ];
+
+        assert_eq!(
+            parse_model_picker_selection("2", &choices).expect("valid selection"),
+            Some("sonnet".to_string())
+        );
+        assert_eq!(
+            parse_model_picker_selection("DeepSeek auto", &choices).expect("valid label"),
+            Some("deepseek-auto".to_string())
+        );
+        assert_eq!(
+            parse_model_picker_selection("q", &choices).expect("valid cancel"),
+            None
+        );
+        assert_eq!(
+            parse_model_picker_selection("openai/gpt-4.1-mini", &choices)
+                .expect("literal model should pass through"),
+            Some("openai/gpt-4.1-mini".to_string())
+        );
+        assert!(parse_model_picker_selection("0", &choices).is_err());
+        assert!(parse_model_picker_selection("9", &choices).is_err());
     }
 
     #[test]

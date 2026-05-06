@@ -90,11 +90,34 @@ Supported permission modes:
 The default mode is `workspace-write`; use `--dangerously-skip-permissions` or
 `--permission-mode danger-full-access` only when unrestricted access is needed.
 
+Interactive model switching:
+
+```text
+/model
+/model sonnet
+/model deepseek-auto
+```
+
+`/model` with no argument shows the current model plus a numbered picker. Enter
+the number, a listed model name, or any literal provider model ID. Press Enter
+or type `q` to cancel without changing the session. `/model <name>` keeps the
+fast path for users who already know the target model.
+
 Model aliases currently supported by the CLI:
 
 - `opus` → `claude-opus-4-6`
 - `sonnet` → `claude-sonnet-4-6`
 - `haiku` → `claude-haiku-4-5-20251213`
+- `deepseek-auto` → automatic DeepSeek V4 routing
+- `deepseek-fast` → `deepseek-v4-flash`
+- `deepseek-agent` → `deepseek-v4-pro`
+
+Default model resolution for the REPL:
+
+1. explicit `--model`
+2. `ANTHROPIC_MODEL`
+3. project/user settings `model`
+4. built-in default
 
 ## Authentication
 
@@ -186,6 +209,26 @@ Model names starting with `qwen/` or `qwen-` are automatically routed to the Das
 
 Reasoning variants (`qwen-qwq-*`, `qwq-*`, `*-thinking`) automatically strip `temperature`/`top_p`/`frequency_penalty`/`presence_penalty` before the request hits the wire (these params are rejected by reasoning models).
 
+### DeepSeek V4
+
+```bash
+export DEEPSEEK_API_KEY="sk-..."
+
+cd rust
+./target/debug/claw --model deepseek-auto prompt "fix this failing test"
+```
+
+DeepSeek model names are routed to the DeepSeek OpenAI-compatible endpoint
+(`https://api.deepseek.com`) and use `DEEPSEEK_API_KEY`. The built-in profiles
+are:
+
+- `deepseek-auto`: explicitly enabled auto routing. Simple requests use
+  `deepseek-v4-flash`; complex coding, long-context, tool-result, or error
+  recovery requests use `deepseek-v4-pro` with `reasoning_effort=max` unless you
+  supplied a different reasoning effort.
+- `deepseek-fast`: always use `deepseek-v4-flash`.
+- `deepseek-agent`: always use `deepseek-v4-pro`.
+
 ## Supported Providers & Models
 
 `claw` has three built-in provider backends. The provider is selected automatically based on the model name, falling back to whichever credential is present in the environment.
@@ -198,6 +241,7 @@ Reasoning variants (`qwen-qwq-*`, `qwq-*`, `*-thinking`) automatically strip `te
 | **xAI** | OpenAI-compatible | `XAI_API_KEY` | `XAI_BASE_URL` | `https://api.x.ai/v1` |
 | **OpenAI-compatible** | OpenAI Chat Completions | `OPENAI_API_KEY` | `OPENAI_BASE_URL` | `https://api.openai.com/v1` |
 | **DashScope** (Alibaba) | OpenAI-compatible | `DASHSCOPE_API_KEY` | `DASHSCOPE_BASE_URL` | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| **DeepSeek** | OpenAI-compatible | `DEEPSEEK_API_KEY` | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` |
 
 The OpenAI-compatible backend also serves as the gateway for **OpenRouter**, **Ollama**, and any other service that speaks the OpenAI `/v1/chat/completions` wire format — just point `OPENAI_BASE_URL` at the service.
 
@@ -212,6 +256,9 @@ These are the models registered in the built-in alias table with known token lim
 | `opus` | `claude-opus-4-6` | Anthropic | 32 000 | 200 000 |
 | `sonnet` | `claude-sonnet-4-6` | Anthropic | 64 000 | 200 000 |
 | `haiku` | `claude-haiku-4-5-20251213` | Anthropic | 64 000 | 200 000 |
+| `deepseek-auto` | auto-selects `deepseek-v4-flash` or `deepseek-v4-pro` | DeepSeek | — | — |
+| `deepseek-fast` | `deepseek-v4-flash` | DeepSeek | — | — |
+| `deepseek-agent` | `deepseek-v4-pro` | DeepSeek | — | — |
 | `grok` / `grok-3` | `grok-3` | xAI | 64 000 | 131 072 |
 | `grok-mini` / `grok-3-mini` | `grok-3-mini` | xAI | 64 000 | 131 072 |
 | `grok-2` | `grok-2` | xAI | — | — |
