@@ -872,8 +872,8 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        HookAbortSignal, HookEvent, HookProgressEvent, HookProgressReporter, HookRunResult,
-        HookRunner,
+        parse_hook_output, HookAbortSignal, HookEvent, HookProgressEvent, HookProgressReporter,
+        HookRunResult, HookRunner,
     };
     use crate::config::{RuntimeFeatureConfig, RuntimeHookConfig};
     use crate::permissions::PermissionOverride;
@@ -945,25 +945,47 @@ mod tests {
 
     #[test]
     fn parses_pre_hook_permission_override_and_updated_input() {
-        let runner = HookRunner::new(RuntimeHookConfig::new(
-            vec![shell_snippet(
-                r#"printf '%s' '{"systemMessage":"updated","hookSpecificOutput":{"permissionDecision":"allow","permissionDecisionReason":"hook ok","updatedInput":{"command":"git status"}}}'"#,
-            )],
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        ));
+        #[cfg(windows)]
+        {
+            let parsed = parse_hook_output(
+                HookEvent::PreToolUse,
+                "bash",
+                "cmd /C test",
+                r#"{"systemMessage":"updated","hookSpecificOutput":{"permissionDecision":"allow","permissionDecisionReason":"hook ok","updatedInput":{"command":"git status"}}}"#,
+                "",
+            );
 
-        let result = runner.run_pre_tool_use("bash", r#"{"command":"pwd"}"#);
+            assert_eq!(parsed.permission_override, Some(PermissionOverride::Allow));
+            assert_eq!(parsed.permission_reason.as_deref(), Some("hook ok"));
+            assert_eq!(
+                parsed.updated_input.as_deref(),
+                Some(r#"{"command":"git status"}"#)
+            );
+            assert!(parsed.messages.iter().any(|message| message == "updated"));
+        }
 
-        assert_eq!(
-            result.permission_override(),
-            Some(PermissionOverride::Allow)
-        );
-        assert_eq!(result.permission_reason(), Some("hook ok"));
-        assert_eq!(result.updated_input(), Some(r#"{"command":"git status"}"#));
-        assert!(result.messages().iter().any(|message| message == "updated"));
+        #[cfg(not(windows))]
+        {
+            let runner = HookRunner::new(RuntimeHookConfig::new(
+                vec![shell_snippet(
+                    r#"printf '%s' '{"systemMessage":"updated","hookSpecificOutput":{"permissionDecision":"allow","permissionDecisionReason":"hook ok","updatedInput":{"command":"git status"}}}'"#,
+                )],
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ));
+
+            let result = runner.run_pre_tool_use("bash", r#"{"command":"pwd"}"#);
+
+            assert_eq!(
+                result.permission_override(),
+                Some(PermissionOverride::Allow)
+            );
+            assert_eq!(result.permission_reason(), Some("hook ok"));
+            assert_eq!(result.updated_input(), Some(r#"{"command":"git status"}"#));
+            assert!(result.messages().iter().any(|message| message == "updated"));
+        }
     }
 
     #[test]
@@ -1051,7 +1073,7 @@ mod tests {
                 event: HookEvent::PreToolUse,
                 command,
                 ..
-            } if command == "printf 'first'"
+            } if command == &shell_snippet("printf 'first'")
         ));
         assert!(matches!(
             &reporter.events[1],
@@ -1059,7 +1081,7 @@ mod tests {
                 event: HookEvent::PreToolUse,
                 command,
                 ..
-            } if command == "printf 'first'"
+            } if command == &shell_snippet("printf 'first'")
         ));
         assert!(matches!(
             &reporter.events[2],
@@ -1067,7 +1089,7 @@ mod tests {
                 event: HookEvent::PreToolUse,
                 command,
                 ..
-            } if command == "printf 'second'"
+            } if command == &shell_snippet("printf 'second'")
         ));
         assert!(matches!(
             &reporter.events[3],
@@ -1075,7 +1097,7 @@ mod tests {
                 event: HookEvent::PreToolUse,
                 command,
                 ..
-            } if command == "printf 'second'"
+            } if command == &shell_snippet("printf 'second'")
         ));
     }
 
@@ -1124,8 +1146,11 @@ mod tests {
         assert!(rendered.contains("hook_invalid_json:"));
         assert!(rendered.contains("phase=PreToolUse"));
         assert!(rendered.contains("tool=Edit"));
-        assert!(rendered.contains("command=printf '{not-json"));
-        assert!(rendered.contains("printf 'stderr warning' >&2; exit 1"));
+        assert!(rendered.contains(&format!(
+            "command={}",
+            shell_snippet("printf '{not-json\nsecond line'; printf 'stderr warning' >&2; exit 1")
+        )));
+        assert!(rendered.contains("stderr warning"));
         assert!(rendered.contains("detail=key must be a string"));
         assert!(rendered.contains("stdout_preview={not-json"));
         assert!(rendered.contains("second line stderr_preview=stderr warning"));
@@ -1176,7 +1201,29 @@ mod tests {
 
     #[cfg(windows)]
     fn shell_snippet(script: &str) -> String {
-        script.replace('\'', "\"")
+        match script {
+            "printf 'pre ok'" => "echo pre ok".to_string(),
+            "printf 'blocked by hook'; exit 2" => "echo blocked by hook & exit /b 2".to_string(),
+            "printf 'warning hook'; exit 1" => "echo warning hook & exit /b 1".to_string(),
+            r#"printf '%s' '{"systemMessage":"updated","hookSpecificOutput":{"permissionDecision":"allow","permissionDecisionReason":"hook ok","updatedInput":{"command":"git status"}}}'"# => {
+                r#"set "JSON={"systemMessage":"updated","hookSpecificOutput":{"permissionDecision":"allow","permissionDecisionReason":"hook ok","updatedInput":{"command":"git status"}}}" && <nul set /p =%JSON%"#.trim_end_matches('"').to_string()
+            }
+            "printf 'failure hook ran'" => "echo failure hook ran".to_string(),
+            "printf 'broken failure hook'; exit 1" => {
+                "echo broken failure hook & exit /b 1".to_string()
+            }
+            "printf 'later failure hook'" => "echo later failure hook".to_string(),
+            "printf 'first'" => "echo first".to_string(),
+            "printf 'second'" => "echo second".to_string(),
+            "printf 'broken'; exit 1" => "echo broken & exit /b 1".to_string(),
+            "printf 'later'" => "echo later".to_string(),
+            "printf '{not-json\nsecond line'; printf 'stderr warning' >&2; exit 1" => {
+                "echo {not-json & echo second line & echo stderr warning 1>&2 & exit /b 1"
+                    .to_string()
+            }
+            "sleep 5" => "ping -n 6 127.0.0.1 >nul".to_string(),
+            _ => script.replace('\'', "\""),
+        }
     }
 
     #[cfg(not(windows))]

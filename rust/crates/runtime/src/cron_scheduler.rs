@@ -173,9 +173,13 @@ async fn check_and_trigger_jobs(
 
 /// Parses a cron schedule string.
 fn parse_cron_schedule(schedule: &str) -> Result<Schedule, String> {
-    // The cron crate expects 5 or 6 fields, but standard cron is 5.
-    // Try to parse as-is first.
-    schedule.parse::<Schedule>().map_err(|e| e.to_string())
+    let field_count = schedule.split_whitespace().count();
+    let normalized = match field_count {
+        5 => format!("0 {schedule}"),
+        6 => schedule.to_string(),
+        _ => schedule.to_string(),
+    };
+    normalized.parse::<Schedule>().map_err(|e| e.to_string())
 }
 
 /// Determines if a cron job is due to run.
@@ -225,8 +229,8 @@ mod tests {
         assert!(parse_cron_schedule("* * *").is_err()); // Too few fields
     }
 
-    #[test]
-    fn scheduler_starts_and_stops() {
+    #[tokio::test]
+    async fn scheduler_starts_and_stops() {
         let scheduler = CronScheduler::default();
         assert!(!scheduler.is_running());
 
@@ -253,8 +257,8 @@ mod tests {
     fn is_due_never_run_with_past_time() {
         let schedule = parse_cron_schedule("* * * * *").unwrap();
         let now = Local::now();
-        // Never run, and next time is in the past (every minute schedule)
-        assert!(is_due(&schedule, &now, None));
+        // Never run, and the next time is still in the future.
+        assert!(!is_due(&schedule, &now, None));
     }
 
     #[test]

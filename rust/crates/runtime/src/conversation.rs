@@ -1690,7 +1690,15 @@ mod tests {
 
     #[cfg(windows)]
     fn shell_snippet(script: &str) -> String {
-        script.replace('\'', "\"")
+        match script {
+            "printf 'blocked by hook'; exit 2" => "echo blocked by hook & exit /b 2".to_string(),
+            "printf 'broken hook'; exit 1" => "echo broken hook & exit /b 1".to_string(),
+            "printf 'pre hook ran'" => "echo pre hook ran".to_string(),
+            "printf 'post hook ran'" => "echo post hook ran".to_string(),
+            "printf 'post hook should not run'" => "echo post hook should not run".to_string(),
+            "printf 'failure hook ran'" => "echo failure hook ran".to_string(),
+            _ => script.replace('\'', "\""),
+        }
     }
 
     #[cfg(not(windows))]

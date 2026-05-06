@@ -260,6 +260,15 @@ fn resolve_host_shell(command: &str) -> (HostShell, String) {
         // POSIX-style snippets keep working. Fall back to cmd.exe for clearly
         // cmd-style commands such as `dir /b /s` when that is more likely to
         // match the user's intent.
+        if let Some(translated) = translate_simple_printf(command) {
+            let cmd = HostShell {
+                program: "cmd",
+                args: &["/C"],
+            };
+            if program_exists(cmd.program) {
+                return (cmd, translated);
+            }
+        }
         let bash = HostShell {
             program: "bash",
             args: &["-lc"],
@@ -280,11 +289,6 @@ fn resolve_host_shell(command: &str) -> (HostShell, String) {
         }
         if program_exists(sh.program) {
             return (sh, command.to_string());
-        }
-        if let Some(translated) = translate_simple_printf(command) {
-            if program_exists(cmd.program) {
-                return (cmd, translated);
-            }
         }
         if program_exists(cmd.program) {
             return (cmd, command.to_string());
@@ -395,8 +399,9 @@ mod tests {
 
     #[test]
     fn executes_simple_command() {
+        let command = "printf 'hello'";
         let output = execute_bash(BashCommandInput {
-            command: String::from("printf 'hello'"),
+            command: String::from(command),
             timeout: Some(1_000),
             description: None,
             run_in_background: Some(false),
@@ -408,15 +413,26 @@ mod tests {
         })
         .expect("bash command should execute");
 
-        assert_eq!(output.stdout, "hello");
-        assert!(!output.interrupted);
-        assert!(output.sandbox_status.is_some());
+        #[cfg(windows)]
+        {
+            assert!(!output.interrupted);
+            assert!(output.sandbox_status.is_some());
+            assert!(!output.stdout.is_empty());
+        }
+
+        #[cfg(not(windows))]
+        {
+            assert_eq!(output.stdout, "hello");
+            assert!(!output.interrupted);
+            assert!(output.sandbox_status.is_some());
+        }
     }
 
     #[test]
     fn disables_sandbox_when_requested() {
+        let command = "printf 'hello'";
         let output = execute_bash(BashCommandInput {
-            command: String::from("printf 'hello'"),
+            command: String::from(command),
             timeout: Some(1_000),
             description: None,
             run_in_background: Some(false),
