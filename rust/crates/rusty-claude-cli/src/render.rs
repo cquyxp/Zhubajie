@@ -1020,18 +1020,105 @@ fn osc8_hyperlink(text: &str, url: &str) -> String {
 /// Prepend `bullet` to the first line and align continuation lines with spaces.
 /// Handles ANSI-escaped text by measuring visible width (excluding ANSI codes).
 pub fn add_bullet_prefix(text: &str, bullet: &str) -> String {
-    let indent = " ".repeat(visible_width(bullet));
+    let terminal_width = size()
+        .ok()
+        .map(|(columns, _)| usize::from(columns))
+        .filter(|columns| *columns > 0)
+        .unwrap_or(100);
+    add_bullet_prefix_with_width(text, bullet, terminal_width)
+}
+
+fn add_bullet_prefix_with_width(text: &str, bullet: &str, terminal_width: usize) -> String {
+    let bullet_width = visible_width(bullet);
+    let indent = " ".repeat(bullet_width);
+    let available_width = terminal_width.saturating_sub(bullet_width).max(24);
     let mut result = String::with_capacity(text.len() + bullet.len() + 32);
-    for (i, line) in text.split('\n').enumerate() {
-        if i > 0 {
-            result.push('\n');
-            result.push_str(&indent);
-        } else {
-            result.push_str(bullet);
+    let mut first_line = true;
+
+    for line in text.split('\n') {
+        let wrapped_lines = wrap_display_line(line, available_width);
+        for wrapped in wrapped_lines {
+            if !first_line {
+                result.push('\n');
+                result.push_str(&indent);
+            } else {
+                result.push_str(bullet);
+                first_line = false;
+            }
+            result.push_str(&wrapped);
         }
-        result.push_str(line);
     }
+
     result
+}
+
+fn wrap_display_line(line: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![line.to_string()];
+    }
+    if line.is_empty() {
+        return vec![String::new()];
+    }
+
+    let mut segments = Vec::new();
+    let mut current = String::new();
+
+    for word in line.split_whitespace() {
+        let word_width = visible_width(word);
+        if current.is_empty() {
+            if word_width <= width || word.contains('\u{1b}') {
+                current.push_str(word);
+            } else {
+                segments.extend(split_long_plain_word(word, width));
+            }
+            continue;
+        }
+
+        let current_width = visible_width(&current);
+        if current_width + 1 + word_width <= width {
+            current.push(' ');
+            current.push_str(word);
+        } else {
+            segments.push(current);
+            current = String::new();
+            if word_width <= width || word.contains('\u{1b}') {
+                current.push_str(word);
+            } else {
+                segments.extend(split_long_plain_word(word, width));
+            }
+        }
+    }
+
+    if !current.is_empty() {
+        segments.push(current);
+    }
+
+    if segments.is_empty() {
+        segments.push(String::new());
+    }
+
+    segments
+}
+
+fn split_long_plain_word(word: &str, width: usize) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0usize;
+
+    for ch in word.chars() {
+        current.push(ch);
+        current_width += 1;
+        if current_width >= width {
+            chunks.push(std::mem::take(&mut current));
+            current_width = 0;
+        }
+    }
+
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+
+    chunks
 }
 
 fn strip_ansi(input: &str) -> String {
@@ -1123,6 +1210,22 @@ mod tests {
         assert_eq!(lines[2], "│ alpha │ 1     │");
         assert_eq!(lines[3], "│ beta  │ 22    │");
         assert!(markdown_output.contains('\u{1b}'));
+    }
+
+    #[test]
+    fn bullet_prefix_wraps_long_lines_to_width() {
+        let rendered = super::add_bullet_prefix_with_width(
+            "this is a long line that should wrap cleanly without breaking the bullet layout",
+            "● ",
+            24,
+        );
+        let plain_text = strip_ansi(&rendered);
+        let lines = plain_text.lines().collect::<Vec<_>>();
+
+        assert!(lines.len() > 2);
+        assert!(lines[0].starts_with("● "));
+        assert!(lines[1].starts_with("  "));
+        assert!(lines.iter().any(|line| line.contains("wrap cleanly")));
     }
 
     #[test]
