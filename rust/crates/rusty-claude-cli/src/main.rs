@@ -4570,19 +4570,26 @@ fn render_diff_report_for(cwd: &Path) -> Result<String, Box<dyn std::error::Erro
     }
     let staged = run_git_diff_command_in(cwd, &["diff", "--cached"])?;
     let unstaged = run_git_diff_command_in(cwd, &["diff"])?;
+    let staged_short = run_git_diff_command_in(cwd, &["diff", "--cached", "--shortstat"])?;
+    let unstaged_short = run_git_diff_command_in(cwd, &["diff", "--shortstat"])?;
     if staged.trim().is_empty() && unstaged.trim().is_empty() {
         return Ok(
-            "Diff\n  Result           clean working tree\n  Detail           no current changes"
+            "Diff\n  Summary          clean working tree\n  Detail           no current changes"
                 .to_string(),
         );
     }
 
     let mut sections = Vec::new();
+    sections.push(format!(
+        "Summary\n  Staged           {}\n  Unstaged         {}",
+        summarize_shortstat(&staged_short),
+        summarize_shortstat(&unstaged_short)
+    ));
     if !staged.trim().is_empty() {
-        sections.push(format!("Staged changes:\n{}", staged.trim_end()));
+        sections.push(format!("Staged changes\n{}", staged.trim_end()));
     }
     if !unstaged.trim().is_empty() {
-        sections.push(format!("Unstaged changes:\n{}", unstaged.trim_end()));
+        sections.push(format!("Unstaged changes\n{}", unstaged.trim_end()));
     }
 
     Ok(format!("Diff\n\n{}", sections.join("\n\n")))
@@ -4607,6 +4614,10 @@ fn render_diff_json_for(cwd: &Path) -> Result<serde_json::Value, Box<dyn std::er
     Ok(serde_json::json!({
         "kind": "diff",
         "result": if staged.trim().is_empty() && unstaged.trim().is_empty() { "clean" } else { "changes" },
+        "summary": {
+            "staged": summarize_shortstat(&run_git_diff_command_in(cwd, &["diff", "--cached", "--shortstat"])?) ,
+            "unstaged": summarize_shortstat(&run_git_diff_command_in(cwd, &["diff", "--shortstat"])?) ,
+        },
         "staged": staged.trim(),
         "unstaged": unstaged.trim(),
     }))
@@ -4625,6 +4636,15 @@ fn run_git_diff_command_in(
         return Err(format!("git {} failed: {stderr}", args.join(" ")).into());
     }
     Ok(String::from_utf8(output.stdout)?)
+}
+
+fn summarize_shortstat(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        "no changes".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn render_teleport_report(target: &str) -> Result<String, Box<dyn std::error::Error>> {
@@ -10260,7 +10280,8 @@ UU conflicted.rs",
         git(&["commit", "-m", "init", "--quiet"], &root);
 
         let report = render_diff_report_for(&root).expect("diff report should render");
-        assert!(report.contains("clean working tree"));
+        assert!(report.contains("Summary          clean working tree"));
+        assert!(report.contains("Detail           no current changes"));
 
         fs::remove_dir_all(root).expect("cleanup temp dir");
     }
@@ -10283,8 +10304,11 @@ UU conflicted.rs",
             .expect("update file twice");
 
         let report = render_diff_report_for(&root).expect("diff report should render");
-        assert!(report.contains("Staged changes:"));
-        assert!(report.contains("Unstaged changes:"));
+        assert!(report.contains("Summary"));
+        assert!(report.contains("Staged           "));
+        assert!(report.contains("Unstaged         "));
+        assert!(report.contains("Staged changes"));
+        assert!(report.contains("Unstaged changes"));
         assert!(report.contains("tracked.txt"));
 
         fs::remove_dir_all(root).expect("cleanup temp dir");
@@ -10338,7 +10362,8 @@ UU conflicted.rs",
                 .expect("resume diff should work")
         });
         let message = outcome.message.expect("diff message should exist");
-        assert!(message.contains("Unstaged changes:"));
+        assert!(message.contains("Summary"));
+        assert!(message.contains("Unstaged changes"));
         assert!(message.contains("tracked.txt"));
 
         fs::remove_dir_all(root).expect("cleanup temp dir");
