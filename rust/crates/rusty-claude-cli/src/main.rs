@@ -4326,11 +4326,9 @@ fn render_config_report(section: Option<&str>) -> Result<String, Box<dyn std::er
     let runtime_config = loader.load()?;
 
     let mut lines = vec![
+        "Config".to_string(),
         format!(
-            "Config
-  Working directory {}
-  Loaded files      {}
-  Merged keys       {}",
+            "Summary\n  Working directory {}\n  Loaded files      {}\n  Merged keys       {}",
             cwd.display(),
             runtime_config.loaded_entries().len(),
             runtime_config.merged().len()
@@ -4457,13 +4455,14 @@ fn render_config_json(
 fn render_memory_report() -> Result<String, Box<dyn std::error::Error>> {
     let cwd = env::current_dir()?;
     let project_context = ProjectContext::discover(&cwd, DEFAULT_DATE)?;
-    let mut lines = vec![format!(
-        "Memory
-  Working directory {}
-  Instruction files {}",
-        cwd.display(),
-        project_context.instruction_files.len()
-    )];
+    let mut lines = vec![
+        "Memory".to_string(),
+        format!(
+            "Summary\n  Working directory {}\n  Instruction files {}",
+            cwd.display(),
+            project_context.instruction_files.len()
+        ),
+    ];
     if project_context.instruction_files.is_empty() {
         lines.push("Discovered files".to_string());
         lines.push(
@@ -5026,7 +5025,29 @@ fn render_version_report() -> String {
 }
 
 fn render_export_text(session: &Session) -> String {
-    let mut lines = vec!["# Conversation Export".to_string(), String::new()];
+    let mut lines = vec![
+        "# Conversation Export".to_string(),
+        String::new(),
+        "Summary".to_string(),
+        format!("  Messages         {}", session.messages.len()),
+    ];
+    if let Some(workspace_root) = session.workspace_root() {
+        lines.push(format!("  Workspace        {}", workspace_root.display()));
+    }
+    if let Some(fork) = &session.fork {
+        let branch = fork.branch_name.as_deref().unwrap_or("(unnamed)");
+        lines.push(format!(
+            "  Forked from      {} (branch {branch})",
+            fork.parent_session_id
+        ));
+    }
+    if let Some(compaction) = &session.compaction {
+        lines.push(format!(
+            "  Compactions      {} (last removed {} messages)",
+            compaction.count, compaction.removed_message_count
+        ));
+    }
+    lines.push(String::new());
     for (index, message) in session.messages.iter().enumerate() {
         let role = match message.role {
             MessageRole::System => "system",
@@ -7951,7 +7972,8 @@ mod tests {
         parse_history_count, parse_model_picker_selection, permission_policy, print_help_to,
         push_output_block, render_config_json, render_config_report, render_diff_report,
         render_diff_report_for, render_memory_report, render_prompt_history_report,
-        render_repl_help, render_resume_usage, render_session_markdown, repl_prompt_prefix,
+        render_repl_help, render_resume_usage, render_session_markdown, render_export_text,
+        repl_prompt_prefix,
         repl_status_line, resolve_deepseek_auto_route, resolve_model_alias,
         resolve_model_alias_with_config, resolve_repl_model, resolve_session_reference,
         response_to_events, resume_supported_slash_commands, run_resume_command, short_tool_id,
@@ -9212,6 +9234,32 @@ mod tests {
         assert!(markdown.contains("**Tool result** `read_file` _(id `short`, error)_"));
         // an empty summary should not produce a stray blockquote line
         assert!(!markdown.contains("> \n"));
+    }
+
+    #[test]
+    fn render_export_text_includes_summary_section() {
+        let mut session = Session::new();
+        session.session_id = "export-summary".to_string();
+        session.workspace_root = Some(std::path::PathBuf::from("C:/work/claw-code"));
+        session.fork = Some(runtime::SessionFork {
+            parent_session_id: "parent-123".to_string(),
+            branch_name: Some("feature/export".to_string()),
+        });
+        session.compaction = Some(runtime::SessionCompaction {
+            count: 2,
+            removed_message_count: 5,
+            summary: "trimmed old context".to_string(),
+        });
+        session.messages = vec![ConversationMessage::user_text("Hello")];
+
+        let export = render_export_text(&session);
+        assert!(export.starts_with("# Conversation Export"));
+        assert!(export.contains("Summary"));
+        assert!(export.contains("Messages"));
+        assert!(export.contains("Workspace"));
+        assert!(export.contains("Forked from"));
+        assert!(export.contains("Compactions"));
+        assert!(export.contains("Hello"));
     }
 
     #[test]

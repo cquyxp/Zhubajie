@@ -146,7 +146,7 @@ impl DoctorReport {
         let mut lines = vec![
             "Doctor".to_string(),
             format!(
-                "Overview\n  OK               {ok_count}\n  Warn             {warn_count}\n  Fail             {fail_count}"
+                "Summary\n  OK               {ok_count}\n  Warn             {warn_count}\n  Fail             {fail_count}"
             ),
         ];
         if let Some(check) = focus {
