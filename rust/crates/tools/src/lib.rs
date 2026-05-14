@@ -83,6 +83,16 @@ pub enum ToolSource {
     Conditional,
 }
 
+/// High-level family used to teach the model how to reason about tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ToolFamily {
+    Read,
+    Mutate,
+    Execute,
+    Coordinate,
+    Notify,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ToolRegistry {
     entries: Vec<ToolManifestEntry>,
@@ -97,6 +107,99 @@ impl ToolRegistry {
     #[must_use]
     pub fn entries(&self) -> &[ToolManifestEntry] {
         &self.entries
+    }
+}
+
+impl ToolFamily {
+    #[must_use]
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Read => "Read/search",
+            Self::Mutate => "Mutate state",
+            Self::Execute => "Execute/spawn",
+            Self::Coordinate => "Coordinate tasks",
+            Self::Notify => "Notify/ask",
+        }
+    }
+
+    #[must_use]
+    pub fn guidance(self) -> &'static str {
+        match self {
+            Self::Read => "Use for inspection and discovery: read files, search text, fetch web pages, or inspect existing state.",
+            Self::Mutate => "Use only when you must change files or session state. Verify the result with a read-back, diff, or test before claiming success.",
+            Self::Execute => "Use for shell commands, subprocesses, workers, or other actions with side effects or broad blast radius.",
+            Self::Coordinate => "Use for task lifecycle and orchestration: create, update, stop, or inspect work items and coordinated agents.",
+            Self::Notify => "Use when you need to ask the user a question or send a direct status update.",
+        }
+    }
+}
+
+/// Render a compact control-surface section that teaches the model how to
+/// choose the smallest safe tool family.
+#[must_use]
+pub fn tool_family_guidance_section() -> String {
+    let families = [
+        ToolFamily::Read,
+        ToolFamily::Mutate,
+        ToolFamily::Execute,
+        ToolFamily::Coordinate,
+        ToolFamily::Notify,
+    ];
+
+    let mut lines = vec!["# Tool families".to_string()];
+    lines.push(
+        "Choose the smallest family that can satisfy the request. Start with read/search, then coordinate, then mutate, and only then execute.".to_string(),
+    );
+    lines.push(
+        "After any mutation, verify with a read-back, diff, or test before you tell the user the change worked.".to_string(),
+    );
+    lines.push(String::new());
+    for family in families {
+        lines.push(format!("- {}: {}", family.title(), family.guidance()));
+    }
+    lines.join("\n")
+}
+
+/// Classify a tool name into a high-level family.
+#[must_use]
+pub fn tool_family_for_name(name: &str) -> ToolFamily {
+    match name {
+        "read_file" | "glob_search" | "grep_search" | "WebFetch" | "WebSearch" | "ToolSearch"
+        | "Skill" => ToolFamily::Read,
+        "write_file" | "edit_file" | "TodoWrite" | "NotebookEdit" | "Config" | "EnterPlanMode"
+        | "ExitPlanMode" => ToolFamily::Mutate,
+        "bash" | "PowerShell" | "REPL" | "Sleep" => ToolFamily::Execute,
+        "Agent"
+        | "TaskCreate"
+        | "RunTaskPacket"
+        | "TaskGet"
+        | "TaskList"
+        | "TaskStop"
+        | "TaskUpdate"
+        | "TaskOutput"
+        | "WorkerCreate"
+        | "WorkerGet"
+        | "WorkerObserve"
+        | "WorkerResolveTrust"
+        | "WorkerAwaitReady"
+        | "WorkerSendPrompt"
+        | "WorkerRestart"
+        | "WorkerTerminate"
+        | "WorkerObserveCompletion"
+        | "TeamCreate"
+        | "TeamDelete"
+        | "CronCreate"
+        | "CronDelete"
+        | "CronList"
+        | "LSP"
+        | "ListMcpResources"
+        | "ReadMcpResource"
+        | "McpAuth"
+        | "RemoteTrigger"
+        | "MCP"
+        | "TestingPermission" => ToolFamily::Coordinate,
+        "SendUserMessage" | "Brief" | "AskUserQuestion" => ToolFamily::Notify,
+        _ => ToolFamily::Execute,
     }
 }
 
@@ -4528,9 +4631,10 @@ mod tests {
         agent_permission_policy, allowed_tools_for_subagent, classify_lane_failure,
         derive_agent_state, execute_agent_with_spawn, execute_tool, extract_recovery_outcome,
         final_assistant_text, global_cron_registry, maybe_commit_provenance, mvp_tool_specs,
-        permission_mode_from_plugin, persist_agent_terminal_state, push_output_block, AgentInput,
-        AgentJob, GlobalToolRegistry, LaneFailureClass, ProviderRuntimeClient,
-        SubagentToolExecutor,
+        permission_mode_from_plugin, persist_agent_terminal_state, push_output_block,
+        tool_family_for_name, tool_family_guidance_section, AgentInput, AgentJob,
+        GlobalToolRegistry, LaneFailureClass, ProviderRuntimeClient, SubagentToolExecutor,
+        ToolFamily,
     };
     use api::OutputContentBlock;
     use runtime::LaneEventName;
@@ -4562,6 +4666,25 @@ mod tests {
         assert!(poisoned.is_err(), "poisoning thread should panic");
 
         let _guard = env_guard();
+    }
+
+    #[test]
+    fn tool_family_guidance_mentions_verification_and_core_families() {
+        let guidance = tool_family_guidance_section();
+        assert!(guidance.contains("Read/search"));
+        assert!(guidance.contains("Mutate state"));
+        assert!(guidance.contains("Execute/spawn"));
+        assert!(guidance.contains("Coordinate tasks"));
+        assert!(guidance.contains("After any mutation, verify"));
+    }
+
+    #[test]
+    fn tool_family_classifier_assigns_core_tools_to_expected_families() {
+        assert_eq!(tool_family_for_name("read_file"), ToolFamily::Read);
+        assert_eq!(tool_family_for_name("write_file"), ToolFamily::Mutate);
+        assert_eq!(tool_family_for_name("bash"), ToolFamily::Execute);
+        assert_eq!(tool_family_for_name("TaskCreate"), ToolFamily::Coordinate);
+        assert_eq!(tool_family_for_name("SendUserMessage"), ToolFamily::Notify);
     }
 
     fn temp_path(name: &str) -> PathBuf {

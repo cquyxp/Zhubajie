@@ -3,8 +3,8 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use runtime::{
-    check_freshness, execute_bash, BashCommandInput, BashCommandOutput, BranchFreshness, LaneEvent,
-    LaneEventName, LaneEventStatus, LaneFailureClass, PermissionMode,
+    check_freshness, execute_bash, BashCommandInput, BashCommandOutput, BashVerification,
+    BranchFreshness, LaneEvent, LaneEventName, LaneEventStatus, LaneFailureClass, PermissionMode,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -234,6 +234,12 @@ fn branch_divergence_output(
             })),
         )
         .expect("lane event should serialize")]),
+        verification: Some(BashVerification {
+            method: String::from("preflight"),
+            verified: false,
+            scope: String::from("workspace_test_branch_freshness"),
+            details: stderr.clone(),
+        }),
         persisted_output_path: None,
         persisted_output_size: None,
         sandbox_status: None,
@@ -383,6 +389,7 @@ fn execute_shell_command(
             return_code_interpretation: None,
             no_output_expected: Some(true),
             structured_content: None,
+            verification: None,
             persisted_output_path: None,
             persisted_output_size: None,
             sandbox_status: None,
@@ -421,6 +428,7 @@ fn execute_shell_command(
                         .map(|code| format!("exit_code:{code}")),
                     no_output_expected: Some(output.stdout.is_empty() && output.stderr.is_empty()),
                     structured_content: None,
+                    verification: None,
                     persisted_output_path: None,
                     persisted_output_size: None,
                     sandbox_status: None,
@@ -451,6 +459,7 @@ fn execute_shell_command(
                     return_code_interpretation: Some(String::from("timeout")),
                     no_output_expected: Some(false),
                     structured_content: None,
+                    verification: None,
                     persisted_output_path: None,
                     persisted_output_size: None,
                     sandbox_status: None,
@@ -478,6 +487,7 @@ fn execute_shell_command(
             .map(|code| format!("exit_code:{code}")),
         no_output_expected: Some(output.stdout.is_empty() && output.stderr.is_empty()),
         structured_content: None,
+        verification: None,
         persisted_output_path: None,
         persisted_output_size: None,
         sandbox_status: None,

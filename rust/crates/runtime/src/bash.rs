@@ -13,6 +13,7 @@ use crate::sandbox::{
     SandboxConfig, SandboxStatus,
 };
 use crate::ConfigLoader;
+use crate::{check_freshness, BranchFreshness};
 
 /// Maximum allowed bash timeout (10 minutes). Values larger than this
 /// are capped to prevent runaway commands from occupying resources.
@@ -62,12 +63,22 @@ pub struct BashCommandOutput {
     pub no_output_expected: Option<bool>,
     #[serde(rename = "structuredContent")]
     pub structured_content: Option<Vec<serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification: Option<BashVerification>,
     #[serde(rename = "persistedOutputPath")]
     pub persisted_output_path: Option<String>,
     #[serde(rename = "persistedOutputSize")]
     pub persisted_output_size: Option<u64>,
     #[serde(rename = "sandboxStatus")]
     pub sandbox_status: Option<SandboxStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BashVerification {
+    pub method: String,
+    pub verified: bool,
+    pub scope: String,
+    pub details: String,
 }
 
 /// Executes a shell command with the requested sandbox settings.
@@ -96,6 +107,7 @@ pub fn execute_bash(input: BashCommandInput) -> io::Result<BashCommandOutput> {
             return_code_interpretation: None,
             no_output_expected: Some(true),
             structured_content: None,
+            verification: None,
             persisted_output_path: None,
             persisted_output_size: None,
             sandbox_status: Some(sandbox_status),
@@ -131,6 +143,7 @@ async fn execute_bash_async(
                     return_code_interpretation: Some(String::from("timeout")),
                     no_output_expected: Some(true),
                     structured_content: None,
+                    verification: None,
                     persisted_output_path: None,
                     persisted_output_size: None,
                     sandbox_status: Some(sandbox_status),
@@ -166,10 +179,115 @@ async fn execute_bash_async(
         return_code_interpretation,
         no_output_expected,
         structured_content: None,
+        verification: bash_verification_for_command(&input.command, &cwd, &sandbox_status),
         persisted_output_path: None,
         persisted_output_size: None,
         sandbox_status: Some(sandbox_status),
     })
+}
+
+fn bash_verification_for_command(
+    command: &str,
+    cwd: &std::path::Path,
+    sandbox_status: &SandboxStatus,
+) -> Option<BashVerification> {
+    if !is_workspace_test_command(command) {
+        return None;
+    }
+
+    let branch = git_stdout(&["branch", "--show-current"])?;
+    let main_ref = resolve_main_ref(&branch)?;
+    let freshness = check_freshness(&branch, &main_ref);
+    let (verified, details) = match freshness {
+        BranchFreshness::Fresh => (
+            true,
+            format!("workspace test preflight passed: `{branch}` is fresh against `{main_ref}`"),
+        ),
+        BranchFreshness::Stale {
+            commits_behind,
+            missing_fixes,
+        } => (
+            false,
+            format!(
+                "workspace test preflight blocked: `{branch}` is {commits_behind} commit(s) behind `{main_ref}`. Missing commits: {}.",
+                missing_fixes.join("; ")
+            ),
+        ),
+        BranchFreshness::Diverged {
+            ahead,
+            behind,
+            missing_fixes,
+        } => (
+            false,
+            format!(
+                "workspace test preflight blocked: `{branch}` has diverged ({ahead} ahead, {behind} behind) from `{main_ref}`. Missing commits: {}.",
+                missing_fixes.join("; ")
+            ),
+        ),
+    };
+
+    Some(BashVerification {
+        method: String::from("preflight"),
+        verified,
+        scope: String::from("workspace_test_branch_freshness"),
+        details: format!(
+            "{details} cwd={} sandbox={:?}",
+            cwd.display(),
+            sandbox_status
+        ),
+    })
+}
+
+fn is_workspace_test_command(command: &str) -> bool {
+    let normalized = normalize_shell_command(command);
+    [
+        "cargo test --workspace",
+        "cargo test --all",
+        "cargo nextest run --workspace",
+        "cargo nextest run --all",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle))
+}
+
+fn normalize_shell_command(command: &str) -> String {
+    command
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
+fn resolve_main_ref(branch: &str) -> Option<String> {
+    let has_local_main = git_ref_exists("main");
+    let has_remote_main = git_ref_exists("origin/main");
+
+    if branch == "main" && has_remote_main {
+        Some("origin/main".to_string())
+    } else if has_local_main {
+        Some("main".to_string())
+    } else if has_remote_main {
+        Some("origin/main".to_string())
+    } else {
+        None
+    }
+}
+
+fn git_ref_exists(reference: &str) -> bool {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet", reference])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+fn git_stdout(args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("git").args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!stdout.is_empty()).then_some(stdout)
 }
 
 fn sandbox_status_for_input(input: &BashCommandInput, cwd: &std::path::Path) -> SandboxStatus {
@@ -425,6 +543,7 @@ mod tests {
             assert_eq!(output.stdout, "hello");
             assert!(!output.interrupted);
             assert!(output.sandbox_status.is_some());
+            assert!(output.verification.is_none());
         }
     }
 

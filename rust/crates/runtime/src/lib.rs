@@ -66,7 +66,7 @@ pub use api_server::{
     create_router, start_server, ApiResponse, ApiServerState, CreateWorkerRequest,
     ObserveScreenRequest, SendPromptRequest,
 };
-pub use bash::{execute_bash, BashCommandInput, BashCommandOutput};
+pub use bash::{execute_bash, BashCommandInput, BashCommandOutput, BashVerification};
 pub use bootstrap::{BootstrapPhase, BootstrapPlan};
 pub use branch_lock::{detect_branch_lock_collisions, BranchLockCollision, BranchLockIntent};
 pub use bridge::{

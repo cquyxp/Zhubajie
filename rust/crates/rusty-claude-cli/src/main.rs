@@ -78,7 +78,8 @@ use runtime::telegram::{ChatId, MessageHandler, TelegramConfig, TelegramRuntime}
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use tools::{
-    execute_tool, mvp_tool_specs, GlobalToolRegistry, RuntimeToolDefinition, ToolSearchOutput,
+    execute_tool, mvp_tool_specs, tool_family_for_name, tool_family_guidance_section,
+    GlobalToolRegistry, RuntimeToolDefinition, ToolSearchOutput,
 };
 use uuid::Uuid;
 
@@ -137,9 +138,6 @@ searching the codebase to understand the current state. Focus on:
 
 Output a clear plan with numbered steps. Each step should include which files to modify, \
 what to change, and how to verify it worked.";
-
-/// Read-only tools allowed during the Planning phase.
-const PLANNING_TOOLS: &[&str] = &["Read", "GlobSearch", "GrepSearch", "WebSearch", "WebFetch"];
 
 pub(crate) const CLI_SUBCOMMAND_SUGGESTIONS: &[&str] = &[
     "doctor",
@@ -1622,6 +1620,7 @@ struct RuntimeMcpState {
 struct BuiltRuntime {
     runtime: Option<ConversationRuntime<AnthropicRuntimeClient, CliToolExecutor>>,
     plugin_registry: PluginRegistry,
+    tool_registry: GlobalToolRegistry,
     plugins_active: bool,
     mcp_state: Option<Arc<Mutex<RuntimeMcpState>>>,
     mcp_active: bool,
@@ -1631,11 +1630,13 @@ impl BuiltRuntime {
     fn new(
         runtime: ConversationRuntime<AnthropicRuntimeClient, CliToolExecutor>,
         plugin_registry: PluginRegistry,
+        tool_registry: GlobalToolRegistry,
         mcp_state: Option<Arc<Mutex<RuntimeMcpState>>>,
     ) -> Self {
         Self {
             runtime: Some(runtime),
             plugin_registry,
+            tool_registry,
             plugins_active: true,
             mcp_state,
             mcp_active: true,
@@ -2204,14 +2205,16 @@ impl LiveCli {
         let goal = self.runtime.session().goal.clone();
         let saved_prompt = self.system_prompt.clone();
         let saved_tools = self.allowed_tools.clone();
+        let phase_tools =
+            phase_allowed_tools(phase, &self.runtime.tool_registry, saved_tools.as_ref());
 
         if let Some(goal) = &goal {
             self.system_prompt
                 .push(format!("## Session Goal\n\n{goal}"));
         }
+        self.allowed_tools = phase_tools;
         if phase == PlanPhase::Planning {
             self.system_prompt.push(PLAN_SYSTEM_PROMPT.to_string());
-            self.allowed_tools = Some(PLANNING_TOOLS.iter().map(|s| s.to_string()).collect());
         } else if phase == PlanPhase::Executing {
             if let Some(plan) = &self.runtime.session().plan.clone() {
                 self.system_prompt
@@ -5106,7 +5109,7 @@ fn short_tool_id(id: &str) -> String {
 }
 
 fn build_system_prompt(model: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    Ok(load_system_prompt(
+    let mut sections = load_system_prompt(
         env::current_dir()?,
         DEFAULT_DATE,
         env::consts::OS,
@@ -5119,7 +5122,30 @@ fn build_system_prompt(model: &str) -> Result<Vec<String>, Box<dyn std::error::E
             &format!("Model family: {model}"),
         )
     })
-    .collect())
+    .collect::<Vec<_>>();
+    sections.push(tool_family_guidance_section());
+    Ok(sections)
+}
+
+fn phase_allowed_tools(
+    phase: PlanPhase,
+    tool_registry: &GlobalToolRegistry,
+    base_allowed_tools: Option<&AllowedToolSet>,
+) -> Option<AllowedToolSet> {
+    match phase {
+        PlanPhase::Planning => {
+            let allowed = tool_registry
+                .definitions(base_allowed_tools)
+                .into_iter()
+                .filter(|definition| {
+                    tool_family_for_name(&definition.name) == tools::ToolFamily::Read
+                })
+                .map(|definition| definition.name)
+                .collect::<AllowedToolSet>();
+            Some(allowed)
+        }
+        PlanPhase::Executing | PlanPhase::Inactive => base_allowed_tools.cloned(),
+    }
 }
 
 pub(crate) fn build_runtime_plugin_state() -> Result<RuntimePluginState, Box<dyn std::error::Error>>
@@ -5634,7 +5660,12 @@ pub(crate) fn build_runtime_with_plugin_state(
         }
     }
 
-    Ok(BuiltRuntime::new(runtime, plugin_registry, mcp_state))
+    Ok(BuiltRuntime::new(
+        runtime,
+        plugin_registry,
+        tool_registry,
+        mcp_state,
+    ))
 }
 
 struct CliHookProgressReporter;
@@ -7661,6 +7692,7 @@ mod tests {
         ConversationMessage, MessageRole, OAuthConfig, PermissionMode, Session, ToolExecutor,
     };
     use serde_json::json;
+    use std::collections::BTreeSet;
     use std::fs;
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -9258,6 +9290,28 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(names.contains(&"bash".to_string()));
         assert!(names.contains(&"plugin_echo".to_string()));
+    }
+
+    #[test]
+    fn planning_phase_filters_to_read_family_tools() {
+        let filtered_tools = super::phase_allowed_tools(
+            super::PlanPhase::Planning,
+            &GlobalToolRegistry::builtin(),
+            None,
+        )
+        .expect("planning phase should yield an allowlist");
+        let filtered = filter_tool_specs(&GlobalToolRegistry::builtin(), Some(&filtered_tools));
+        let names = filtered
+            .into_iter()
+            .map(|definition| definition.name)
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"read_file".to_string()));
+        assert!(names.contains(&"glob_search".to_string()));
+        assert!(names.contains(&"grep_search".to_string()));
+        assert!(names.contains(&"WebFetch".to_string()));
+        assert!(names.contains(&"WebSearch".to_string()));
+        assert!(!names.contains(&"bash".to_string()));
+        assert!(!names.contains(&"write_file".to_string()));
     }
 
     #[test]

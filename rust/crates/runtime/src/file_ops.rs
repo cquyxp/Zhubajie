@@ -94,6 +94,7 @@ pub struct WriteFileOutput {
     pub original_file: Option<String>,
     #[serde(rename = "gitDiff")]
     pub git_diff: Option<serde_json::Value>,
+    pub verification: FileVerification,
 }
 
 /// Output envelope for targeted string-replacement edits.
@@ -115,6 +116,22 @@ pub struct EditFileOutput {
     pub replace_all: bool,
     #[serde(rename = "gitDiff")]
     pub git_diff: Option<serde_json::Value>,
+    pub verification: FileVerification,
+}
+
+/// Result of verifying a mutation by reading the file back.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileVerification {
+    #[serde(rename = "method")]
+    pub method: String,
+    #[serde(rename = "verified")]
+    pub verified: bool,
+    #[serde(rename = "checkedPath")]
+    pub checked_path: String,
+    #[serde(rename = "expectedBytes")]
+    pub expected_bytes: usize,
+    #[serde(rename = "observedBytes")]
+    pub observed_bytes: usize,
 }
 
 /// Result of a glob-based filename search.
@@ -240,6 +257,7 @@ pub fn write_file(path: &str, content: &str) -> io::Result<WriteFileOutput> {
         fs::create_dir_all(parent)?;
     }
     fs::write(&absolute_path, content)?;
+    let verification = verify_text_file_write(&absolute_path, content)?;
 
     Ok(WriteFileOutput {
         kind: if original_file.is_some() {
@@ -252,6 +270,7 @@ pub fn write_file(path: &str, content: &str) -> io::Result<WriteFileOutput> {
         structured_patch: make_patch(original_file.as_deref().unwrap_or(""), content),
         original_file,
         git_diff: None,
+        verification,
     })
 }
 
@@ -283,6 +302,7 @@ pub fn edit_file(
         original_file.replacen(old_string, new_string, 1)
     };
     fs::write(&absolute_path, &updated)?;
+    let verification = verify_text_file_write(&absolute_path, &updated)?;
 
     Ok(EditFileOutput {
         file_path: absolute_path.to_string_lossy().into_owned(),
@@ -293,6 +313,25 @@ pub fn edit_file(
         user_modified: false,
         replace_all,
         git_diff: None,
+        verification,
+    })
+}
+
+fn verify_text_file_write(path: &Path, expected: &str) -> io::Result<FileVerification> {
+    let observed = fs::read_to_string(path)?;
+    if observed != expected {
+        return Err(io::Error::other(format!(
+            "file verification failed for {}: observed content did not match the requested write",
+            path.display()
+        )));
+    }
+
+    Ok(FileVerification {
+        method: String::from("read_back"),
+        verified: true,
+        checked_path: path.to_string_lossy().into_owned(),
+        expected_bytes: expected.len(),
+        observed_bytes: observed.len(),
     })
 }
 
@@ -732,6 +771,8 @@ mod tests {
         let write_output = write_file(path.to_string_lossy().as_ref(), "one\ntwo\nthree")
             .expect("write should succeed");
         assert_eq!(write_output.kind, "create");
+        assert!(write_output.verification.verified);
+        assert_eq!(write_output.verification.method, "read_back");
 
         let read_output = read_file(path.to_string_lossy().as_ref(), Some(1), Some(1))
             .expect("read should succeed");
@@ -746,6 +787,8 @@ mod tests {
         let output = edit_file(path.to_string_lossy().as_ref(), "alpha", "omega", true)
             .expect("edit should succeed");
         assert!(output.replace_all);
+        assert!(output.verification.verified);
+        assert_eq!(output.verification.method, "read_back");
     }
 
     #[test]
