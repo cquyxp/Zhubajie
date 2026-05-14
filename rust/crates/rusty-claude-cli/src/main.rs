@@ -4333,7 +4333,7 @@ fn render_config_report(section: Option<&str>) -> Result<String, Box<dyn std::er
             runtime_config.loaded_entries().len(),
             runtime_config.merged().len()
         ),
-        "Discovered files".to_string(),
+        "Files".to_string(),
     ];
     for entry in discovered {
         let source = match entry.source {
@@ -4464,13 +4464,13 @@ fn render_memory_report() -> Result<String, Box<dyn std::error::Error>> {
         ),
     ];
     if project_context.instruction_files.is_empty() {
-        lines.push("Discovered files".to_string());
+        lines.push("Files".to_string());
         lines.push(
             "  No CLAUDE instruction files discovered in the current directory ancestry."
                 .to_string(),
         );
     } else {
-        lines.push("Discovered files".to_string());
+        lines.push("Files".to_string());
         for (index, file) in project_context.instruction_files.iter().enumerate() {
             let preview = file.content.lines().next().unwrap_or("").trim();
             let preview = if preview.is_empty() {
@@ -5047,6 +5047,8 @@ fn render_export_text(session: &Session) -> String {
             compaction.count, compaction.removed_message_count
         ));
     }
+    lines.push(String::new());
+    lines.push("Messages".to_string());
     lines.push(String::new());
     for (index, message) in session.messages.iter().enumerate() {
         let role = match message.role {
@@ -9255,7 +9257,7 @@ mod tests {
         let export = render_export_text(&session);
         assert!(export.starts_with("# Conversation Export"));
         assert!(export.contains("Summary"));
-        assert!(export.contains("Messages"));
+        assert!(export.contains("\nMessages\n\n"));
         assert!(export.contains("Workspace"));
         assert!(export.contains("Forked from"));
         assert!(export.contains("Compactions"));
@@ -10240,14 +10242,14 @@ mod tests {
         assert!(report.contains("Memory"));
         assert!(report.contains("Working directory"));
         assert!(report.contains("Instruction files"));
-        assert!(report.contains("Discovered files"));
+        assert!(report.contains("Files"));
     }
 
     #[test]
     fn config_report_uses_sectioned_layout() {
         let report = render_config_report(None).expect("config report should render");
         assert!(report.contains("Config"));
-        assert!(report.contains("Discovered files"));
+        assert!(report.contains("Files"));
         assert!(report.contains("Merged JSON"));
     }
 
