@@ -6812,12 +6812,7 @@ fn format_tool_result(name: &str, output: &str, is_error: bool) -> String {
         "\x1b[1;32m✓\x1b[0m"
     };
     let body = if is_error {
-        let summary = truncate_for_summary(output.trim(), 160);
-        if summary.is_empty() {
-            format!("{icon} \x1b[38;5;245m{name}\x1b[0m")
-        } else {
-            format!("{icon} \x1b[38;5;245m{name}\x1b[0m\n\x1b[38;5;203m{summary}\x1b[0m")
-        }
+        format_tool_error(icon, name, output)
     } else {
         let parsed: serde_json::Value =
             serde_json::from_str(output).unwrap_or(serde_json::Value::String(output.to_string()));
@@ -6955,13 +6950,13 @@ fn format_bash_result(icon: &str, parsed: &serde_json::Value) -> String {
         .get("backgroundTaskId")
         .and_then(|value| value.as_str())
     {
-        write!(&mut lines[0], " backgrounded ({task_id})").expect("write to string");
+        lines.push(format!("\x1b[2mbackgrounded ({task_id})\x1b[0m"));
     } else if let Some(status) = parsed
         .get("returnCodeInterpretation")
         .and_then(|value| value.as_str())
         .filter(|status| !status.is_empty())
     {
-        write!(&mut lines[0], " {status}").expect("write to string");
+        lines.push(format!("\x1b[2m{status}\x1b[0m"));
     }
 
     if let Some(stdout) = parsed.get("stdout").and_then(|value| value.as_str()) {
@@ -7007,7 +7002,7 @@ fn format_read_result(icon: &str, parsed: &serde_json::Value) -> String {
     let end_line = start_line.saturating_add(num_lines.saturating_sub(1));
 
     format!(
-        "{icon} \x1b[2m📄 Read {path} (lines {}-{} of {})\x1b[0m",
+        "{icon} \x1b[38;5;245mread_file\x1b[0m\n\x1b[2m📄 Read {path} (lines {}-{} of {})\x1b[0m",
         start_line,
         end_line.max(start_line),
         total_lines,
@@ -7025,7 +7020,7 @@ fn format_write_result(icon: &str, parsed: &serde_json::Value) -> String {
         .and_then(|value| value.as_str())
         .map_or(0, |content| content.lines().count());
     format!(
-        "{icon} \x1b[1;32m✏️ {} {path}\x1b[0m \x1b[2m({line_count} lines)\x1b[0m",
+        "{icon} \x1b[38;5;245mwrite_file\x1b[0m\n\x1b[1;32m✏️ {} {path}\x1b[0m \x1b[2m({line_count} lines)\x1b[0m",
         if kind == "create" { "Wrote" } else { "Updated" },
     )
 }
@@ -7074,8 +7069,12 @@ fn format_edit_result(icon: &str, parsed: &serde_json::Value) -> String {
     });
 
     match preview {
-        Some(preview) => format!("{icon} \x1b[1;33m📝 Edited {path}{suffix}\x1b[0m\n{preview}"),
-        None => format!("{icon} \x1b[1;33m📝 Edited {path}{suffix}\x1b[0m"),
+        Some(preview) => format!(
+            "{icon} \x1b[38;5;245medit_file\x1b[0m\n\x1b[1;33m📝 Edited {path}{suffix}\x1b[0m\n{preview}"
+        ),
+        None => format!(
+            "{icon} \x1b[38;5;245medit_file\x1b[0m\n\x1b[1;33m📝 Edited {path}{suffix}\x1b[0m"
+        ),
     }
 }
 
@@ -7167,7 +7166,67 @@ fn format_generic_tool_result(icon: &str, name: &str, parsed: &serde_json::Value
     } else if preview.contains('\n') {
         format!("{icon} \x1b[38;5;245m{name}\x1b[0m\n{preview}")
     } else {
-        format!("{icon} \x1b[38;5;245m{name}:\x1b[0m {preview}")
+        format!("{icon} \x1b[38;5;245m{name}\x1b[0m\n{preview}")
+    }
+}
+
+fn format_tool_error(icon: &str, name: &str, error: &str) -> String {
+    let trimmed = error.trim();
+    if trimmed.is_empty() {
+        return format!("{icon} \x1b[38;5;245m{name}\x1b[0m");
+    }
+
+    let summary = truncate_middle_for_summary(trimmed, 160);
+    let advice = match classify_tool_error(trimmed) {
+        ToolErrorHint::Permission => "check permission mode, allowedTools, or workspace trust",
+        ToolErrorHint::Input => "check the tool schema and generated arguments",
+        ToolErrorHint::Path => "check the target path or command arguments",
+        ToolErrorHint::Timeout => "retry with a narrower scope or longer timeout",
+        ToolErrorHint::Unavailable => "the tool or backend is unavailable right now",
+        ToolErrorHint::Other => "inspect the session output for more context",
+    };
+
+    format!(
+        "{icon} \x1b[38;5;245m{name}\x1b[0m\n\x1b[38;5;203m{summary}\x1b[0m\n\x1b[2m{advice}\x1b[0m"
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolErrorHint {
+    Permission,
+    Input,
+    Path,
+    Timeout,
+    Unavailable,
+    Other,
+}
+
+fn classify_tool_error(error: &str) -> ToolErrorHint {
+    let lowered = error.to_ascii_lowercase();
+    if lowered.contains("not enabled by the current --allowedtools setting")
+        || lowered.contains("permission")
+        || lowered.contains("forbidden")
+        || lowered.contains("denied")
+    {
+        ToolErrorHint::Permission
+    } else if lowered.contains("invalid tool input json")
+        || lowered.contains("missing required field")
+        || lowered.contains("schema")
+        || lowered.contains("argument")
+    {
+        ToolErrorHint::Input
+    } else if lowered.contains("no such file")
+        || lowered.contains("not found")
+        || lowered.contains("does not exist")
+        || lowered.contains("path")
+    {
+        ToolErrorHint::Path
+    } else if lowered.contains("timeout") || lowered.contains("timed out") {
+        ToolErrorHint::Timeout
+    } else if lowered.contains("unavailable") || lowered.contains("disabled") {
+        ToolErrorHint::Unavailable
+    } else {
+        ToolErrorHint::Other
     }
 }
 
@@ -10581,6 +10640,19 @@ UU conflicted.rs",
         assert!(call.contains('…'));
         assert!(call.contains("cargo test"));
         assert!(call.contains("echo middle-preserved"));
+    }
+
+    #[test]
+    fn tool_rendering_errors_include_actionable_hint() {
+        let rendered = format_tool_result(
+            "write_file",
+            "invalid tool input JSON: missing required field `file_path`",
+            true,
+        );
+
+        assert!(rendered.contains("write_file"));
+        assert!(rendered.contains("missing required field"));
+        assert!(rendered.contains("check the tool schema"));
     }
 
     #[test]

@@ -249,7 +249,8 @@ impl TerminalRenderer {
 
     #[must_use]
     pub fn render_markdown(&self, markdown: &str) -> String {
-        let normalized = normalize_nested_fences(markdown);
+        let wrapped = wrap_markdown_paragraphs(markdown, terminal_width().saturating_sub(4).max(60));
+        let normalized = normalize_nested_fences(&wrapped);
         let mut output = String::new();
         let mut state = RenderState::default();
         let mut code_language = String::new();
@@ -1005,6 +1006,14 @@ fn visible_width(input: &str) -> usize {
     strip_ansi(input).chars().count()
 }
 
+fn terminal_width() -> usize {
+    size()
+        .ok()
+        .map(|(columns, _)| usize::from(columns))
+        .filter(|columns| *columns > 0)
+        .unwrap_or(100)
+}
+
 /// Wrap text in OSC 8 hyperlink escape sequences so terminals render it as a
 /// clickable link.  For multi-line text each line is wrapped individually so
 /// wrapped lines remain clickable.
@@ -1020,12 +1029,7 @@ fn osc8_hyperlink(text: &str, url: &str) -> String {
 /// Prepend `bullet` to the first line and align continuation lines with spaces.
 /// Handles ANSI-escaped text by measuring visible width (excluding ANSI codes).
 pub fn add_bullet_prefix(text: &str, bullet: &str) -> String {
-    let terminal_width = size()
-        .ok()
-        .map(|(columns, _)| usize::from(columns))
-        .filter(|columns| *columns > 0)
-        .unwrap_or(100);
-    add_bullet_prefix_with_width(text, bullet, terminal_width)
+    add_bullet_prefix_with_width(text, bullet, terminal_width())
 }
 
 fn add_bullet_prefix_with_width(text: &str, bullet: &str, terminal_width: usize) -> String {
@@ -1121,6 +1125,147 @@ fn split_long_plain_word(word: &str, width: usize) -> Vec<String> {
     chunks
 }
 
+fn wrap_markdown_paragraphs(markdown: &str, width: usize) -> String {
+    let mut output = Vec::new();
+    let mut paragraph = Vec::new();
+    let mut in_fence: Option<FenceMarker> = None;
+
+    for line in markdown.lines() {
+        let trimmed = line.trim_end();
+        let trimmed_start = trimmed.trim_start();
+
+        if let Some(fence) = in_fence {
+            output.push(line.to_string());
+            if line_closes_fence(trimmed_start, fence) {
+                in_fence = None;
+            }
+            continue;
+        }
+
+        if trimmed.is_empty() {
+            flush_wrapped_paragraph(&mut output, &mut paragraph, width);
+            output.push(String::new());
+            continue;
+        }
+
+        if let Some(fence) = parse_fence_opener(trimmed_start) {
+            flush_wrapped_paragraph(&mut output, &mut paragraph, width);
+            output.push(line.to_string());
+            in_fence = Some(fence);
+            continue;
+        }
+
+        if is_markdown_block_boundary(trimmed_start) {
+            flush_wrapped_paragraph(&mut output, &mut paragraph, width);
+            output.push(line.to_string());
+            continue;
+        }
+
+        paragraph.push(trimmed_start.to_string());
+    }
+
+    flush_wrapped_paragraph(&mut output, &mut paragraph, width);
+    output.join("\n")
+}
+
+fn flush_wrapped_paragraph(output: &mut Vec<String>, paragraph: &mut Vec<String>, width: usize) {
+    if paragraph.is_empty() {
+        return;
+    }
+    let joined = paragraph.join(" ");
+    output.extend(wrap_plain_text_to_width(&joined, width));
+    paragraph.clear();
+}
+
+fn is_markdown_block_boundary(line: &str) -> bool {
+    if line.starts_with('#')
+        || line.starts_with('>')
+        || line.starts_with("    ")
+        || line.starts_with('\t')
+        || line.starts_with("- ")
+        || line.starts_with("* ")
+        || line.starts_with("+ ")
+        || is_ordered_list_item(line)
+        || is_table_row(line)
+        || is_rule_line(line)
+    {
+        return true;
+    }
+    false
+}
+
+fn is_ordered_list_item(line: &str) -> bool {
+    let mut chars = line.chars().peekable();
+    let mut saw_digit = false;
+
+    while let Some(ch) = chars.peek() {
+        if ch.is_ascii_digit() {
+            saw_digit = true;
+            chars.next();
+        } else {
+            break;
+        }
+    }
+
+    if !saw_digit {
+        return false;
+    }
+
+    matches!(chars.next(), Some('.') | Some(')')) && matches!(chars.next(), Some(' '))
+}
+
+fn is_table_row(line: &str) -> bool {
+    line.contains('|') && line.trim_start().starts_with('|')
+}
+
+fn is_rule_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    matches!(trimmed, "---" | "***" | "___")
+}
+
+fn wrap_plain_text_to_width(text: &str, width: usize) -> Vec<String> {
+    if text.is_empty() {
+        return vec![String::new()];
+    }
+
+    let mut lines = Vec::new();
+    let mut current = String::new();
+
+    for word in text.split_whitespace() {
+        let word_width = visible_width(word);
+        if current.is_empty() {
+            if word_width <= width {
+                current.push_str(word);
+            } else {
+                lines.extend(split_long_plain_word(word, width));
+            }
+            continue;
+        }
+
+        if visible_width(&current) + 1 + word_width <= width {
+            current.push(' ');
+            current.push_str(word);
+        } else {
+            lines.push(std::mem::take(&mut current));
+            if word_width <= width {
+                current.push_str(word);
+            } else {
+                lines.extend(split_long_plain_word(word, width));
+            }
+        }
+    }
+
+    if !current.is_empty() {
+        lines.push(current);
+    }
+
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+
+    lines
+}
+
 fn strip_ansi(input: &str) -> String {
     let mut output = String::new();
     let mut chars = input.chars().peekable();
@@ -1195,6 +1340,19 @@ mod tests {
         assert!(plain_text.contains("2. second"));
         assert!(plain_text.contains("  ◦ nested"));
         assert!(plain_text.contains("  ◦ child"));
+    }
+
+    #[test]
+    fn wraps_long_paragraphs_without_touching_code_blocks() {
+        let terminal_renderer = TerminalRenderer::new();
+        let markdown_output = terminal_renderer.render_markdown(
+            "This is a long paragraph that should wrap into multiple lines so the terminal output remains readable and easier to scan.\n\n```rust\nfn demo() {}\n```",
+        );
+        let plain_text = strip_ansi(&markdown_output);
+
+        assert!(plain_text.lines().any(|line| line.contains("multiple lines")));
+        assert!(plain_text.contains("╭─ [rust]"));
+        assert!(plain_text.contains("fn demo"));
     }
 
     #[test]
