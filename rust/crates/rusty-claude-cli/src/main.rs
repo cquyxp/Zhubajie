@@ -3922,11 +3922,14 @@ fn format_status_report(
     [
         format!(
             "Status
+  Summary
   Model            {model}
   Permission mode  {permission_mode}
 {goal_line}
   Activity         {} messages · {} turns · {} est. tokens
-  Next step        /status · /diff · /commit",
+  Next step        /status · /diff · /commit
+
+  Tip              use /diff for a compact change review",
             usage.message_count, usage.turns, usage.estimated_tokens,
         ),
         format!(
@@ -3973,7 +3976,35 @@ fn format_status_report(
             context.discovered_config_files,
             context.memory_file_count,
         ),
-        format_sandbox_report(&context.sandbox_status),
+        format!(
+            "Sandbox\n  Summary          {}\n  Active           {}\n  Filesystem       {}\n  Network          {}\n  Namespace        {}\n  Fallback reason  {}",
+            if context.sandbox_status.enabled {
+                if context.sandbox_status.active {
+                    "enabled and active"
+                } else {
+                    "enabled but inactive"
+                }
+            } else {
+                "disabled"
+            },
+            context.sandbox_status.active,
+            context.sandbox_status.filesystem_mode.as_str(),
+            if context.sandbox_status.network_active {
+                "isolated"
+            } else {
+                "shared"
+            },
+            if context.sandbox_status.namespace_active {
+                "restricted"
+            } else {
+                "unrestricted"
+            },
+            context
+                .sandbox_status
+                .fallback_reason
+                .clone()
+                .unwrap_or_else(|| "<none>".to_string()),
+        ),
     ]
     .join(
         "
@@ -4022,6 +4053,23 @@ fn format_sandbox_report(status: &runtime::SandboxStatus) -> String {
             .fallback_reason
             .clone()
             .unwrap_or_else(|| "<none>".to_string()),
+    )
+}
+
+fn render_collapsible_message_block(
+    index: usize,
+    role: &str,
+    header: &str,
+    body: &str,
+) -> String {
+    let body = body.trim_end();
+    if body.is_empty() {
+        return format!(
+            "<details>\n<summary>{index}. {role} - {header}</summary>\n\n<em>empty</em>\n</details>"
+        );
+    }
+    format!(
+        "<details>\n<summary>{index}. {role} - {header}</summary>\n\n{body}\n</details>"
     )
 }
 
@@ -5044,27 +5092,23 @@ fn render_session_markdown(session: &Session, session_id: &str, session_path: &P
             MessageRole::Assistant => "Assistant",
             MessageRole::Tool => "Tool",
         };
-        lines.push(format!("## {}. {role}", index + 1));
-        lines.push(String::new());
+        let mut body = Vec::new();
         for block in &message.blocks {
             match block {
                 ContentBlock::Text { text } => {
                     let trimmed = text.trim_end();
                     if !trimmed.is_empty() {
-                        lines.push(trimmed.to_string());
-                        lines.push(String::new());
+                        body.push(trimmed.to_string());
+                        body.push(String::new());
                     }
                 }
                 ContentBlock::ToolUse { id, name, input } => {
-                    lines.push(format!(
-                        "**Tool call** `{name}` _(id `{}`)_",
-                        short_tool_id(id)
-                    ));
+                    body.push(format!("**Tool call** `{name}` _(id `{}`)_", short_tool_id(id)));
                     let summary = summarize_tool_payload_for_markdown(input);
                     if !summary.is_empty() {
-                        lines.push(format!("> {summary}"));
+                        body.push(format!("> {summary}"));
                     }
-                    lines.push(String::new());
+                    body.push(String::new());
                 }
                 ContentBlock::ToolResult {
                     tool_use_id,
@@ -5073,28 +5117,46 @@ fn render_session_markdown(session: &Session, session_id: &str, session_path: &P
                     is_error,
                 } => {
                     let status = if *is_error { "error" } else { "ok" };
-                    lines.push(format!(
+                    body.push(format!(
                         "**Tool result** `{tool_name}` _(id `{}`, {status})_",
                         short_tool_id(tool_use_id)
                     ));
                     let summary = summarize_tool_payload_for_markdown(output);
                     if !summary.is_empty() {
-                        lines.push(format!("> {summary}"));
+                        body.push(format!("> {summary}"));
                     }
-                    lines.push(String::new());
+                    body.push(String::new());
                 }
             }
         }
         if let Some(usage) = message.usage {
-            lines.push(format!(
+            body.push(format!(
                 "_tokens: in={} out={} cache_create={} cache_read={}_",
                 usage.input_tokens,
                 usage.output_tokens,
                 usage.cache_creation_input_tokens,
                 usage.cache_read_input_tokens,
             ));
-            lines.push(String::new());
+            body.push(String::new());
         }
+        let body = body.join("\n").trim_end().to_string();
+        let header = if let Some(first_line) = message.blocks.iter().find_map(|block| match block {
+            ContentBlock::Text { text } => {
+                let trimmed = text.trim();
+                (!trimmed.is_empty()).then(|| truncate_for_summary(first_visible_line(trimmed), 60))
+            }
+            ContentBlock::ToolUse { name, .. } => Some(format!("tool call {name}")),
+            ContentBlock::ToolResult { tool_name, is_error, .. } => Some(format!(
+                "tool result {tool_name} {}",
+                if *is_error { "error" } else { "ok" }
+            )),
+        }) {
+            first_line
+        } else {
+            "empty".to_string()
+        };
+        lines.push(render_collapsible_message_block(index + 1, role, &header, &body));
+        lines.push(String::new());
     }
     lines.join("\n")
 }
@@ -8978,13 +9040,14 @@ mod tests {
         assert!(markdown.starts_with("# Conversation Export"));
         assert!(markdown.contains("- **Session**: `session-export-test`"));
         assert!(markdown.contains("- **Messages**: 3"));
-        assert!(markdown.contains("## 1. User"));
+        assert!(markdown.contains("<details>"));
+        assert!(markdown.contains("<summary>1. User"));
         assert!(markdown.contains("How do I list files?"));
-        assert!(markdown.contains("## 2. Assistant"));
+        assert!(markdown.contains("<summary>2. Assistant"));
         assert!(markdown.contains("**Tool call** `bash`"));
         assert!(markdown.contains("toolu_abcdef…"));
         assert!(markdown.contains("ls -la"));
-        assert!(markdown.contains("## 3. Tool"));
+        assert!(markdown.contains("<summary>3. Tool"));
         assert!(markdown.contains("**Tool result** `bash`"));
         assert!(markdown.contains("ok"));
         assert!(markdown.contains("total 8"));
@@ -9851,11 +9914,13 @@ mod tests {
             },
         );
         assert!(status.contains("Status"));
+        assert!(status.contains("Summary"));
         assert!(status.contains("Model            claude-sonnet"));
         assert!(status.contains("Permission mode  workspace-write"));
         assert!(status.contains("Goal             ship the release quickly"));
         assert!(status.contains("Activity         7 messages · 3 turns · 128 est. tokens"));
         assert!(status.contains("Next step        /status · /diff · /commit"));
+        assert!(status.contains("Tip              use /diff for a compact change review"));
         assert!(status.contains("Latest total     10"));
         assert!(status.contains("Cumulative total 31"));
         assert!(status.contains("Cwd              /tmp/project"));
@@ -9871,6 +9936,8 @@ mod tests {
         assert!(status.contains("Session          session.jsonl"));
         assert!(status.contains("Config files     loaded 2/3"));
         assert!(status.contains("Memory files     4"));
+        assert!(status.contains("Sandbox"));
+        assert!(status.contains("Summary          disabled"));
         assert!(status.contains("Suggested flow   /status → /diff → /commit"));
     }
 
