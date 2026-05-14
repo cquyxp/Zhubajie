@@ -3915,10 +3915,99 @@ fn format_status_report(
     goal: Option<&str>,
     context: &StatusContext,
 ) -> String {
+    format_status_report_for_width(model, usage, permission_mode, goal, context, ui_terminal_width())
+}
+
+fn format_status_report_for_width(
+    model: &str,
+    usage: StatusUsage,
+    permission_mode: &str,
+    goal: Option<&str>,
+    context: &StatusContext,
+    terminal_width: usize,
+) -> String {
+    let compact = terminal_width < 90;
     let goal_line = goal.map_or_else(
         || "  Goal             <none>".to_string(),
-        |value| format!("  Goal             {}", truncate_for_summary(value, 96)),
+        |value| format!(
+            "  Goal             {}",
+            truncate_for_summary(value, if compact { 60 } else { 96 })
+        ),
     );
+    if compact {
+        return [
+            format!(
+                "Status
+  Summary
+  Model            {}
+  Permission mode  {}
+{goal_line}
+  Activity         {} messages · {} turns · {} est. tokens
+  Next step        /status · /diff · /commit
+
+  Tip              use /diff for a compact change review",
+                truncate_middle_for_summary(model, 36),
+                truncate_middle_for_summary(permission_mode, 22),
+            usage.message_count, usage.turns, usage.estimated_tokens,
+            ),
+            format!(
+                "Usage
+  Latest total     {}
+  Cumulative total {}",
+                usage.latest.total_tokens(),
+                usage.cumulative.total_tokens(),
+            ),
+            format!(
+                "Workspace
+  Cwd              {}
+  Git              {}
+  Session          {}
+  Config files     loaded {}/{}
+  Memory files     {}
+  Suggested flow   /status → /diff → /commit",
+                truncate_middle_for_summary(&context.cwd.display().to_string(), 56),
+                truncate_middle_for_summary(
+                    context
+                        .git_summary
+                        .headline()
+                        .as_str(),
+                    72,
+                ),
+                context.session_path.as_ref().map_or_else(
+                    || "live-repl".to_string(),
+                    |path| truncate_middle_for_summary(&path.display().to_string(), 40)
+                ),
+                context.loaded_config_files,
+                context.discovered_config_files,
+                context.memory_file_count,
+            ),
+            format!(
+                "Sandbox\n  Summary          {}\n  Filesystem       {}\n  Network          {}\n  Namespace        {}",
+                if context.sandbox_status.enabled {
+                    if context.sandbox_status.active {
+                        "enabled and active"
+                    } else {
+                        "enabled but inactive"
+                    }
+                } else {
+                    "disabled"
+                },
+                context.sandbox_status.filesystem_mode.as_str(),
+                if context.sandbox_status.network_active {
+                    "isolated"
+                } else {
+                    "shared"
+                },
+                if context.sandbox_status.namespace_active {
+                    "restricted"
+                } else {
+                    "unrestricted"
+                },
+            ),
+        ]
+        .join("\n\n");
+    }
+
     [
         format!(
             "Status
@@ -4006,11 +4095,7 @@ fn format_status_report(
                 .unwrap_or_else(|| "<none>".to_string()),
         ),
     ]
-    .join(
-        "
-
-",
-    )
+    .join("\n\n")
 }
 
 fn format_sandbox_report(status: &runtime::SandboxStatus) -> String {
@@ -4054,6 +4139,22 @@ fn format_sandbox_report(status: &runtime::SandboxStatus) -> String {
             .clone()
             .unwrap_or_else(|| "<none>".to_string()),
     )
+}
+
+fn ui_terminal_width() -> usize {
+    crossterm::terminal::size()
+        .ok()
+        .map(|(columns, _)| usize::from(columns))
+        .filter(|columns| *columns > 0)
+        .unwrap_or(100)
+}
+
+fn ui_path_limit() -> usize {
+    if ui_terminal_width() < 90 {
+        40
+    } else {
+        72
+    }
 }
 
 fn render_collapsible_message_block(
@@ -6816,15 +6917,19 @@ fn slash_command_completion_candidates_with_sessions(
 fn format_tool_call_start(name: &str, input: &str) -> String {
     let parsed: serde_json::Value =
         serde_json::from_str(input).unwrap_or(serde_json::Value::String(input.to_string()));
+    let width = ui_terminal_width();
+    let path_limit = if width < 90 { 40 } else { 72 };
+    let command_limit = if width < 90 { 96 } else { 160 };
+    let search_limit = if width < 90 { 64 } else { 96 };
 
     let detail = match name {
-        "bash" | "Bash" => format_bash_call(&parsed),
+        "bash" | "Bash" => format_bash_call(&parsed, command_limit),
         "read_file" | "Read" => {
-            let path = extract_tool_path(&parsed);
+            let path = truncate_middle_for_summary(&extract_tool_path(&parsed), path_limit);
             format!("\x1b[2m📄 Reading {path}…\x1b[0m")
         }
         "write_file" | "Write" => {
-            let path = extract_tool_path(&parsed);
+            let path = truncate_middle_for_summary(&extract_tool_path(&parsed), path_limit);
             let lines = parsed
                 .get("content")
                 .and_then(|value| value.as_str())
@@ -6832,7 +6937,7 @@ fn format_tool_call_start(name: &str, input: &str) -> String {
             format!("\x1b[1;32m✏️ Writing {path}\x1b[0m \x1b[2m({lines} lines)\x1b[0m")
         }
         "edit_file" | "Edit" => {
-            let path = extract_tool_path(&parsed);
+            let path = truncate_middle_for_summary(&extract_tool_path(&parsed), path_limit);
             let old_value = parsed
                 .get("old_string")
                 .or_else(|| parsed.get("oldString"))
@@ -6850,13 +6955,13 @@ fn format_tool_call_start(name: &str, input: &str) -> String {
                     .unwrap_or_default()
             )
         }
-        "glob_search" | "Glob" => format_search_start("🔎 Glob", &parsed),
-        "grep_search" | "Grep" => format_search_start("🔎 Grep", &parsed),
+        "glob_search" | "Glob" => format_search_start_with_limit("🔎 Glob", &parsed, search_limit),
+        "grep_search" | "Grep" => format_search_start_with_limit("🔎 Grep", &parsed, search_limit),
         "web_search" | "WebSearch" => parsed
             .get("query")
             .and_then(|value| value.as_str())
-            .unwrap_or("?")
-            .to_string(),
+            .map(|query| truncate_middle_for_summary(query, if width < 90 { 72 } else { 100 }))
+            .unwrap_or_else(|| "?".to_string()),
         _ => summarize_tool_payload(input),
     };
 
@@ -6948,6 +7053,14 @@ fn extract_tool_path(parsed: &serde_json::Value) -> String {
 }
 
 fn format_search_start(label: &str, parsed: &serde_json::Value) -> String {
+    format_search_start_with_limit(label, parsed, 96)
+}
+
+fn format_search_start_with_limit(
+    label: &str,
+    parsed: &serde_json::Value,
+    search_limit: usize,
+) -> String {
     let pattern = parsed
         .get("pattern")
         .and_then(|value| value.as_str())
@@ -6958,8 +7071,8 @@ fn format_search_start(label: &str, parsed: &serde_json::Value) -> String {
         .unwrap_or(".");
     format!(
         "{label} {}\n\x1b[2min {}\x1b[0m",
-        truncate_middle_for_summary(pattern, 96),
-        truncate_middle_for_summary(scope, 88)
+        truncate_middle_for_summary(pattern, search_limit),
+        truncate_middle_for_summary(scope, search_limit.saturating_sub(8))
     )
 }
 
@@ -6968,13 +7081,13 @@ fn format_patch_preview(old_value: &str, new_value: &str) -> Option<String> {
         return None;
     }
     Some(format!(
-        "\x1b[38;5;203m- {}\x1b[0m\n\x1b[38;5;70m+ {}\x1b[0m",
+        "\x1b[2mpatch preview\x1b[0m\n\x1b[38;5;203m- {}\x1b[0m\n\x1b[38;5;70m+ {}\x1b[0m",
         truncate_for_summary(first_visible_line(old_value), 72),
         truncate_for_summary(first_visible_line(new_value), 72)
     ))
 }
 
-fn format_bash_call(parsed: &serde_json::Value) -> String {
+fn format_bash_call(parsed: &serde_json::Value, command_limit: usize) -> String {
     let command = parsed
         .get("command")
         .and_then(|value| value.as_str())
@@ -6990,9 +7103,9 @@ fn format_bash_call(parsed: &serde_json::Value) -> String {
             // Multi-line command whose first line is a comment — show
             // the whole thing (with generous truncation) so the intended
             // command is visible instead of just the comment.
-            truncate_middle_for_summary(command, 400)
+            truncate_middle_for_summary(command, command_limit.saturating_mul(2))
         } else {
-            truncate_middle_for_summary(command, 160)
+            truncate_middle_for_summary(command, command_limit)
         };
         format!("\x1b[48;5;236;38;5;255m $ {} \x1b[0m", summary)
     }
@@ -7048,7 +7161,7 @@ fn format_bash_result(icon: &str, parsed: &serde_json::Value) -> String {
 
 fn format_read_result(icon: &str, parsed: &serde_json::Value) -> String {
     let file = parsed.get("file").unwrap_or(parsed);
-    let path = truncate_middle_for_summary(&extract_tool_path(file), 72);
+    let path = truncate_middle_for_summary(&extract_tool_path(file), ui_path_limit());
     let start_line = file
         .get("startLine")
         .and_then(serde_json::Value::as_u64)
@@ -7072,7 +7185,7 @@ fn format_read_result(icon: &str, parsed: &serde_json::Value) -> String {
 }
 
 fn format_write_result(icon: &str, parsed: &serde_json::Value) -> String {
-    let path = truncate_middle_for_summary(&extract_tool_path(parsed), 72);
+    let path = truncate_middle_for_summary(&extract_tool_path(parsed), ui_path_limit());
     let kind = parsed
         .get("type")
         .and_then(|value| value.as_str())
@@ -7108,8 +7221,9 @@ fn format_structured_patch_preview(parsed: &serde_json::Value) -> Option<String>
 }
 
 fn format_edit_result(icon: &str, parsed: &serde_json::Value) -> String {
-    let path = truncate_middle_for_summary(&extract_tool_path(parsed), 72);
-    let suffix = if parsed
+    let file = parsed.get("file").unwrap_or(parsed);
+    let path = truncate_middle_for_summary(&extract_tool_path(file), ui_path_limit());
+    let suffix = if file
         .get("replaceAll")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false)
@@ -7119,11 +7233,11 @@ fn format_edit_result(icon: &str, parsed: &serde_json::Value) -> String {
         ""
     };
     let preview = format_structured_patch_preview(parsed).or_else(|| {
-        let old_value = parsed
+        let old_value = file
             .get("oldString")
             .and_then(|value| value.as_str())
             .unwrap_or_default();
-        let new_value = parsed
+        let new_value = file
             .get("newString")
             .and_then(|value| value.as_str())
             .unwrap_or_default();
@@ -7135,7 +7249,7 @@ fn format_edit_result(icon: &str, parsed: &serde_json::Value) -> String {
             "{icon} \x1b[38;5;245medit_file\x1b[0m\n\x1b[1;33m📝 Edited {path}{suffix}\x1b[0m\n{preview}"
         ),
         None => format!(
-            "{icon} \x1b[38;5;245medit_file\x1b[0m\n\x1b[1;33m📝 Edited {path}{suffix}\x1b[0m"
+            "{icon} \x1b[38;5;245medit_file\x1b[0m\n\x1b[1;33m📝 Edited {path}{suffix}\x1b[0m\n\x1b[2mpatch preview unavailable\x1b[0m"
         ),
     }
 }
@@ -9942,6 +10056,46 @@ mod tests {
     }
 
     #[test]
+    fn status_line_compacts_for_narrow_width() {
+        let status = super::format_status_report_for_width(
+            "claude-sonnet",
+            StatusUsage {
+                message_count: 7,
+                turns: 3,
+                latest: runtime::TokenUsage::default(),
+                cumulative: runtime::TokenUsage::default(),
+                estimated_tokens: 128,
+            },
+            "workspace-write",
+            Some("ship the release quickly"),
+            &super::StatusContext {
+                cwd: PathBuf::from("/tmp/project"),
+                session_path: Some(PathBuf::from("session.jsonl")),
+                loaded_config_files: 2,
+                discovered_config_files: 3,
+                memory_file_count: 4,
+                project_root: Some(PathBuf::from("/tmp")),
+                git_branch: Some("main".to_string()),
+                git_summary: GitWorkspaceSummary {
+                    changed_files: 3,
+                    staged_files: 1,
+                    unstaged_files: 1,
+                    untracked_files: 1,
+                    conflicted_files: 0,
+                },
+                sandbox_status: runtime::SandboxStatus::default(),
+            },
+            80,
+        );
+
+        assert!(status.contains("Status"));
+        assert!(status.contains("Summary"));
+        assert!(status.contains("Git              dirty"));
+        assert!(!status.contains("Git branch"));
+        assert!(!status.contains("Cumulative input"));
+    }
+
+    #[test]
     fn commit_reports_surface_workspace_context() {
         let summary = GitWorkspaceSummary {
             changed_files: 2,
@@ -10720,6 +10874,25 @@ UU conflicted.rs",
         assert!(rendered.contains("write_file"));
         assert!(rendered.contains("missing required field"));
         assert!(rendered.contains("check the tool schema"));
+    }
+
+    #[test]
+    fn tool_rendering_edit_result_shows_patch_preview_label() {
+        let output = json!({
+            "file": {
+                "filePath": "src/lib.rs",
+                "oldString": "old line",
+                "newString": "new line",
+                "replaceAll": false,
+            }
+        })
+        .to_string();
+
+        let rendered = format_tool_result("edit_file", &output, false);
+
+        assert!(rendered.contains("edit_file"));
+        assert!(rendered.contains("patch preview"));
+        assert!(rendered.contains("Edited src/lib.rs"));
     }
 
     #[test]

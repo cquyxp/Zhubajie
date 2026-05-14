@@ -720,12 +720,17 @@ pub struct MarkdownStreamState {
     pending: String,
 }
 
+const STREAM_MIN_VISIBLE_CHARS: usize = 80;
+
 impl MarkdownStreamState {
     #[must_use]
     pub fn push(&mut self, renderer: &TerminalRenderer, delta: &str) -> Option<String> {
         self.pending.push_str(delta);
         let split = find_stream_safe_boundary(&self.pending)?;
         let ready = self.pending[..split].to_string();
+        if !should_emit_stream_chunk(&ready) {
+            return None;
+        }
         self.pending.drain(..split);
         Some(renderer.markdown_to_ansi(&ready))
     }
@@ -740,6 +745,24 @@ impl MarkdownStreamState {
             Some(renderer.markdown_to_ansi(&pending))
         }
     }
+}
+
+fn should_emit_stream_chunk(chunk: &str) -> bool {
+    let visible_chars = chunk.chars().count();
+    if visible_chars >= STREAM_MIN_VISIBLE_CHARS {
+        return true;
+    }
+    let non_empty_lines = chunk
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count();
+    if non_empty_lines > 1 {
+        return true;
+    }
+    matches!(
+        chunk.chars().rev().find(|ch| !ch.is_whitespace()),
+        Some('.') | Some('!') | Some('?') | Some(':')
+    )
 }
 
 fn apply_code_block_background(line: &str) -> String {
@@ -1404,6 +1427,21 @@ mod tests {
             .push(&renderer, "```\n")
             .expect("closed code fence flushes");
         assert!(strip_ansi(&code).contains("fn main()"));
+    }
+
+    #[test]
+    fn streaming_state_buffers_short_single_line_chunks_until_followup() {
+        let renderer = TerminalRenderer::new();
+        let mut state = MarkdownStreamState::default();
+
+        assert_eq!(state.push(&renderer, "Short heading\n\n"), None);
+        let flushed = state
+            .push(&renderer, "More details arrive later\n\n")
+            .expect("followup text flushes the buffered short chunk");
+        let plain_text = strip_ansi(&flushed);
+
+        assert!(plain_text.contains("Short heading"));
+        assert!(plain_text.contains("More details arrive later"));
     }
 
     #[test]
