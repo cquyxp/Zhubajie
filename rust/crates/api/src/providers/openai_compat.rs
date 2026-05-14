@@ -1049,7 +1049,8 @@ pub fn translate_message(message: &InputMessage, model: &str) -> Vec<Value> {
                 }
             }
             let reasoning = message.reasoning_content.as_ref().filter(|v| !v.is_empty());
-            if text.is_empty() && tool_calls.is_empty() && reasoning.is_none() {
+            let include_reasoning = requires_reasoning_replay && reasoning.is_some();
+            if text.is_empty() && tool_calls.is_empty() && !include_reasoning {
                 Vec::new()
             } else {
                 let mut msg = serde_json::json!({
@@ -1063,7 +1064,7 @@ pub fn translate_message(message: &InputMessage, model: &str) -> Vec<Value> {
                 }
                 // DeepSeek: include reasoning_content so the API doesn't reject
                 // with "reasoning_content must be passed back" (400 error).
-                if requires_reasoning_replay {
+                if include_reasoning {
                     if let Some(reasoning) = reasoning {
                         msg["reasoning_content"] = json!(reasoning);
                     }
@@ -1979,6 +1980,34 @@ mod tests {
             .expect("assistant message with tool calls must include tool_calls field");
         assert!(tool_calls.is_array());
         assert_eq!(tool_calls.as_array().unwrap().len(), 1);
+    }
+
+    /// Regression: reasoning-only assistant messages must not be emitted for
+    /// providers that do not require reasoning replay, because OpenAI-compatible
+    /// APIs reject assistant turns with neither `content` nor `tool_calls`.
+    #[test]
+    fn assistant_reasoning_only_message_is_dropped_when_reasoning_replay_not_required() {
+        use crate::types::{InputContentBlock, InputMessage};
+
+        let request = MessageRequest {
+            model: "gpt-4o".to_string(),
+            max_tokens: 100,
+            messages: vec![InputMessage {
+                role: "assistant".to_string(),
+                content: vec![InputContentBlock::Text {
+                    text: "".to_string(),
+                }],
+                reasoning_content: Some("internal reasoning".to_string()),
+            }],
+            stream: false,
+            ..Default::default()
+        };
+        let payload = build_chat_completion_request(&request, OpenAiCompatConfig::openai());
+        let messages = payload["messages"].as_array().unwrap();
+        assert!(
+            messages.iter().all(|m| m["role"] != "assistant"),
+            "reasoning-only assistant messages must be dropped when reasoning replay is disabled"
+        );
     }
 
     /// Orphaned tool messages (no preceding assistant `tool_calls`) must be

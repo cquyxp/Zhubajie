@@ -1484,25 +1484,26 @@ fn run_repl(
             input::ReadOutcome::Submit(input) => {
                 // Ctrl+O inserts a sentinel character to toggle verbose mode.
                 // Detect and strip it before processing the input.
-                let trimmed = if input.starts_with(input::CTRL_O_SENTINEL) {
+                let input = if input.starts_with(input::CTRL_O_SENTINEL) {
                     let verbose = toggle_verbose_mode();
                     if verbose {
                         eprintln!("\x1b[2m[verbose mode on]\x1b[0m");
                     } else {
                         eprintln!("\x1b[2m[compact mode]\x1b[0m");
                     }
-                    input[1..].trim().to_string()
+                    input[1..].to_string()
                 } else {
-                    input.trim().to_string()
+                    input
                 };
-                if trimmed.is_empty() {
+                let normalized = input.trim();
+                if normalized.is_empty() {
                     continue;
                 }
-                if matches!(trimmed.as_str(), "/exit" | "/quit") {
+                if matches!(normalized, "/exit" | "/quit") {
                     cli.persist_session()?;
                     break;
                 }
-                match SlashCommand::parse(&trimmed) {
+                match SlashCommand::parse(normalized) {
                     Ok(Some(command)) => {
                         if cli.handle_repl_command(command)? {
                             cli.persist_session()?;
@@ -1519,33 +1520,17 @@ fn run_repl(
                 // matches a known skill name, invoke it as `/skills <input>`
                 // rather than forwarding raw text to the LLM (ROADMAP #36).
                 let cwd = std::env::current_dir().unwrap_or_default();
-                if let Some(prompt) = try_resolve_bare_skill_prompt(&cwd, &trimmed) {
-                    let line_count = prompt.lines().count();
-                    if line_count > 3 {
-                        let preview: String = prompt.lines().take(3).collect::<Vec<_>>().join("\n");
-                        eprintln!("\x1b[2m❯ {}\x1b[0m", truncate_for_summary(&preview, 160));
-                        if line_count > 3 {
-                            eprintln!("\x1b[2m  ± {} more lines\x1b[0m", line_count - 3);
-                        }
-                    }
-                    editor.push_history(input);
-                    cli.record_prompt_history(&trimmed);
+                if let Some(prompt) = try_resolve_bare_skill_prompt(&cwd, normalized) {
+                    print_input_preview("skill prompt", &prompt);
+                    editor.push_history(input.clone());
+                    cli.record_prompt_history(normalized);
                     cli.run_turn(&prompt)?;
                     continue;
                 }
-                // Show input preview for long pastes
-                let line_count = trimmed.lines().count();
-                if line_count > 3 {
-                    let preview: String = trimmed.lines().take(3).collect::<Vec<_>>().join("\n");
-                    let display = truncate_for_summary(&preview, 160);
-                    eprintln!("\x1b[2m❯ {display}\x1b[0m");
-                    if line_count > 3 {
-                        eprintln!("\x1b[2m  ± {} more lines\x1b[0m", line_count - 3);
-                    }
-                }
-                editor.push_history(input);
-                cli.record_prompt_history(&trimmed);
-                cli.run_turn(&trimmed)?;
+                print_input_preview("input", &input);
+                editor.push_history(input.clone());
+                cli.record_prompt_history(normalized);
+                cli.run_turn(&input)?;
             }
             input::ReadOutcome::Cancel => {}
             input::ReadOutcome::Exit => {
@@ -5699,6 +5684,23 @@ fn format_internal_prompt_progress_line(
     }
 }
 
+fn format_input_preview(label: &str, text: &str) -> Option<String> {
+    let line_count = text.lines().count();
+    let char_count = text.chars().count();
+    if line_count <= 1 && char_count <= 160 {
+        return None;
+    }
+    Some(format!(
+        "\x1b[2m❯ {label} · {line_count} lines · {char_count} chars\x1b[0m\n\x1b[2m{text}\x1b[0m"
+    ))
+}
+
+fn print_input_preview(label: &str, text: &str) {
+    if let Some(preview) = format_input_preview(label, text) {
+        eprintln!("{preview}");
+    }
+}
+
 fn describe_tool_progress(name: &str, input: &str) -> String {
     let parsed: serde_json::Value =
         serde_json::from_str(input).unwrap_or(serde_json::Value::String(input.to_string()));
@@ -7973,8 +7975,9 @@ mod tests {
         parse_git_status_branch, parse_git_status_metadata_for, parse_git_workspace_summary,
         parse_history_count, parse_model_picker_selection, permission_policy, print_help_to,
         push_output_block, render_config_json, render_config_report, render_diff_report,
-        render_diff_report_for, render_memory_report, render_prompt_history_report,
-        render_repl_help, render_resume_usage, render_session_markdown, render_export_text,
+        format_input_preview, render_diff_report_for, render_memory_report,
+        render_prompt_history_report, render_repl_help, render_resume_usage,
+        render_session_markdown, render_export_text,
         repl_prompt_prefix, repl_status_line_for_width,
         repl_status_line, resolve_deepseek_auto_route, resolve_model_alias,
         resolve_model_alias_with_config, resolve_repl_model, resolve_session_reference,
@@ -10937,6 +10940,16 @@ UU conflicted.rs",
             false,
         );
         assert!(done.contains("📄 Read src/main.rs"));
+    }
+
+    #[test]
+    fn input_preview_keeps_full_text_for_long_pastes() {
+        let text = "line 1\nline 2\nline 3\nline 4\nline 5";
+        let preview = format_input_preview("input", text).expect("preview should render");
+
+        assert!(preview.contains("5 lines"));
+        assert!(preview.contains("line 1"));
+        assert!(preview.contains("line 5"));
     }
 
     #[test]
