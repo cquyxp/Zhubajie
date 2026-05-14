@@ -6899,7 +6899,11 @@ fn format_search_start(label: &str, parsed: &serde_json::Value) -> String {
         .get("path")
         .and_then(|value| value.as_str())
         .unwrap_or(".");
-    format!("{label} {pattern}\n\x1b[2min {scope}\x1b[0m")
+    format!(
+        "{label} {}\n\x1b[2min {}\x1b[0m",
+        truncate_middle_for_summary(pattern, 96),
+        truncate_middle_for_summary(scope, 88)
+    )
 }
 
 fn format_patch_preview(old_value: &str, new_value: &str) -> Option<String> {
@@ -6929,9 +6933,9 @@ fn format_bash_call(parsed: &serde_json::Value) -> String {
             // Multi-line command whose first line is a comment — show
             // the whole thing (with generous truncation) so the intended
             // command is visible instead of just the comment.
-            truncate_for_summary(command, 400)
+            truncate_middle_for_summary(command, 400)
         } else {
-            truncate_for_summary(command, 160)
+            truncate_middle_for_summary(command, 160)
         };
         format!("\x1b[48;5;236;38;5;255m $ {} \x1b[0m", summary)
     }
@@ -6987,7 +6991,7 @@ fn format_bash_result(icon: &str, parsed: &serde_json::Value) -> String {
 
 fn format_read_result(icon: &str, parsed: &serde_json::Value) -> String {
     let file = parsed.get("file").unwrap_or(parsed);
-    let path = extract_tool_path(file);
+    let path = truncate_middle_for_summary(&extract_tool_path(file), 72);
     let start_line = file
         .get("startLine")
         .and_then(serde_json::Value::as_u64)
@@ -7011,7 +7015,7 @@ fn format_read_result(icon: &str, parsed: &serde_json::Value) -> String {
 }
 
 fn format_write_result(icon: &str, parsed: &serde_json::Value) -> String {
-    let path = extract_tool_path(parsed);
+    let path = truncate_middle_for_summary(&extract_tool_path(parsed), 72);
     let kind = parsed
         .get("type")
         .and_then(|value| value.as_str())
@@ -7047,7 +7051,7 @@ fn format_structured_patch_preview(parsed: &serde_json::Value) -> Option<String>
 }
 
 fn format_edit_result(icon: &str, parsed: &serde_json::Value) -> String {
-    let path = extract_tool_path(parsed);
+    let path = truncate_middle_for_summary(&extract_tool_path(parsed), 72);
     let suffix = if parsed
         .get("replaceAll")
         .and_then(serde_json::Value::as_bool)
@@ -7183,6 +7187,27 @@ fn truncate_for_summary(value: &str, limit: usize) -> String {
     } else {
         truncated
     }
+}
+
+fn truncate_middle_for_summary(value: &str, limit: usize) -> String {
+    let visible_len = value.chars().count();
+    if visible_len <= limit || limit <= 1 {
+        return value.to_string();
+    }
+
+    let head = limit.saturating_sub(limit / 2 + 1);
+    let tail = limit.saturating_sub(head + 1);
+    let start = value.chars().take(head).collect::<String>();
+    let end = value
+        .chars()
+        .rev()
+        .take(tail)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>();
+
+    format!("{start}…{end}")
 }
 
 fn truncate_output_for_display(content: &str, max_lines: usize, max_chars: usize) -> String {
@@ -10532,6 +10557,30 @@ UU conflicted.rs",
             false,
         );
         assert!(done.contains("📄 Read src/main.rs"));
+    }
+
+    #[test]
+    fn tool_rendering_middle_truncates_long_paths_and_commands() {
+        let long_path = format!(
+            "src/{}/target/file.rs",
+            "very_long_directory_segment/".repeat(4)
+        );
+        let start = format_tool_call_start(
+            "read_file",
+            &json!({ "path": long_path }).to_string(),
+        );
+        assert!(start.contains('…'));
+        assert!(start.contains("src/"));
+        assert!(start.contains("file.rs"));
+
+        let command = format!(
+            "cd /tmp && {} && cargo test -- --nocapture",
+            "echo middle-preserved ".repeat(8)
+        );
+        let call = format_tool_call_start("bash", &json!({ "command": command }).to_string());
+        assert!(call.contains('…'));
+        assert!(call.contains("cargo test"));
+        assert!(call.contains("echo middle-preserved"));
     }
 
     #[test]
