@@ -4179,9 +4179,31 @@ fn repl_prompt_prefix() -> &'static str {
 }
 
 fn repl_status_line(model: &str, permission_mode: PermissionMode, goal: Option<&str>) -> String {
+    repl_status_line_for_width(model, permission_mode, goal, ui_terminal_width())
+}
+
+fn repl_status_line_for_width(
+    model: &str,
+    permission_mode: PermissionMode,
+    goal: Option<&str>,
+    terminal_width: usize,
+) -> String {
+    let compact = terminal_width < 90;
     let goal_part = goal
-        .map(|value| format!(" | goal: {}", truncate_for_summary(value, 60)))
+        .map(|value| {
+            let limit = if compact { 28 } else { 60 };
+            format!(" | goal: {}", truncate_for_summary(value, limit))
+        })
         .unwrap_or_default();
+    if compact {
+        return format!(
+            "{} [{}] | {}{} | Enter send | Shift+Enter/Ctrl+J newline | Ctrl+O toggle",
+            truncate_middle_for_summary(model, 24),
+            permission_mode.as_str(),
+            verbose_mode_label(),
+            goal_part
+        );
+    }
     format!(
         "{} [{}] | {}{} | Enter send | Shift+Enter/Ctrl+J newline | Tab complete | Ctrl-R history | Ctrl+O toggle",
         model,
@@ -5649,35 +5671,28 @@ fn format_internal_prompt_progress_line(
     } else {
         format!("current step {}", snapshot.step)
     };
-    let mut status_bits = vec![step_label, format!("phase {}", snapshot.phase)];
+    let mut status_bits = vec![step_label, snapshot.phase.clone()];
     if let Some(detail) = snapshot
         .detail
         .as_deref()
         .filter(|detail| !detail.is_empty())
     {
-        status_bits.push(detail.to_string());
+        status_bits.push(truncate_for_summary(detail, 100));
     }
     let status = status_bits.join(" · ");
     match event {
-        InternalPromptProgressEvent::Started => {
-            format!(
-                "🧭 {} status · planning started · {status}",
-                snapshot.command_label
-            )
-        }
-        InternalPromptProgressEvent::Update => {
-            format!("… {} status · {status}", snapshot.command_label)
-        }
+        InternalPromptProgressEvent::Started => format!("🧭 {} · planning · {status}", snapshot.command_label),
+        InternalPromptProgressEvent::Update => format!("… {} · {status}", snapshot.command_label),
         InternalPromptProgressEvent::Heartbeat => format!(
-            "… {} heartbeat · {elapsed_seconds}s elapsed · {status}",
+            "… {} · {elapsed_seconds}s elapsed · {status}",
             snapshot.command_label
         ),
         InternalPromptProgressEvent::Complete => format!(
-            "✔ {} status · completed · {elapsed_seconds}s elapsed · {} steps total",
+            "✔ {} · completed · {elapsed_seconds}s elapsed · {} steps",
             snapshot.command_label, snapshot.step
         ),
         InternalPromptProgressEvent::Failed => format!(
-            "✘ {} status · failed · {elapsed_seconds}s elapsed · {}",
+            "✘ {} · failed · {elapsed_seconds}s elapsed · {}",
             snapshot.command_label,
             error.unwrap_or("unknown error")
         ),
@@ -6982,11 +6997,14 @@ fn format_tool_call_start(name: &str, input: &str) -> String {
         }
         "glob_search" | "Glob" => format_search_start_with_limit("🔎 Glob", &parsed, search_limit),
         "grep_search" | "Grep" => format_search_start_with_limit("🔎 Grep", &parsed, search_limit),
-        "web_search" | "WebSearch" => parsed
-            .get("query")
-            .and_then(|value| value.as_str())
-            .map(|query| truncate_middle_for_summary(query, if width < 90 { 72 } else { 100 }))
-            .unwrap_or_else(|| "?".to_string()),
+        "web_search" | "WebSearch" => {
+            let query = parsed
+                .get("query")
+                .and_then(|value| value.as_str())
+                .map(|query| truncate_middle_for_summary(query, if width < 90 { 72 } else { 100 }))
+                .unwrap_or_else(|| "?".to_string());
+            format!("🌐 WebSearch {query}")
+        }
         _ => summarize_tool_payload(input),
     };
 
@@ -7957,7 +7975,7 @@ mod tests {
         push_output_block, render_config_json, render_config_report, render_diff_report,
         render_diff_report_for, render_memory_report, render_prompt_history_report,
         render_repl_help, render_resume_usage, render_session_markdown, render_export_text,
-        repl_prompt_prefix,
+        repl_prompt_prefix, repl_status_line_for_width,
         repl_status_line, resolve_deepseek_auto_route, resolve_model_alias,
         resolve_model_alias_with_config, resolve_repl_model, resolve_session_reference,
         response_to_events, resume_supported_slash_commands, run_resume_command, short_tool_id,
@@ -9790,6 +9808,24 @@ mod tests {
     }
 
     #[test]
+    fn repl_status_line_compacts_for_narrow_width() {
+        let status = repl_status_line_for_width(
+            "deepseek-v4-flash",
+            PermissionMode::WorkspaceWrite,
+            Some("ship the release quickly"),
+            80,
+        );
+
+        assert!(status.contains("deepseek-v4-flash"));
+        assert!(status.contains("workspace-write"));
+        assert!(status.contains("goal: ship the release"));
+        assert!(status.contains("Enter send"));
+        assert!(status.contains("Ctrl+O toggle"));
+        assert!(!status.contains("Ctrl-R history"));
+        assert!(!status.contains("Tab complete"));
+    }
+
+    #[test]
     fn format_connected_line_renders_anthropic_provider_for_claude_model() {
         let model = "claude-sonnet-4-6";
 
@@ -10888,6 +10924,13 @@ UU conflicted.rs",
         assert!(start.contains("read_file"));
         assert!(start.contains("src/main.rs"));
 
+        let web = format_tool_call_start(
+            "web_search",
+            r#"{"query":"claw code ui polish"}"#,
+        );
+        assert!(web.contains("WebSearch"));
+        assert!(web.contains("claw code ui polish"));
+
         let done = format_tool_result(
             "read_file",
             r#"{"file":{"filePath":"src/main.rs","content":"hello","numLines":1,"startLine":1,"totalLines":1}}"#,
@@ -11072,13 +11115,13 @@ UU conflicted.rs",
             Some("network timeout"),
         );
 
-        assert!(started.contains("planning started"));
+        assert!(started.contains("planning"));
         assert!(started.contains("current step 3"));
-        assert!(heartbeat.contains("heartbeat"));
+        assert!(heartbeat.contains("Ultraplan"));
         assert!(heartbeat.contains("9s elapsed"));
-        assert!(heartbeat.contains("phase running read_file"));
+        assert!(heartbeat.contains("running read_file"));
         assert!(completed.contains("completed"));
-        assert!(completed.contains("3 steps total"));
+        assert!(completed.contains("3 steps"));
         assert!(failed.contains("failed"));
         assert!(failed.contains("network timeout"));
     }

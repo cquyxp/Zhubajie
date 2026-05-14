@@ -272,6 +272,32 @@ src/
      - tool call start / result 的节奏一致
      - 不让 UI 在高频流式下显得跳跃
 
+#### P3: 主 UI 最后收口
+
+10. **[x] REPL 状态行自适应压缩**
+    - **文件**：`rust/crates/rusty-claude-cli/src/main.rs`
+    - **目标**：让输入区底部状态行在窄屏下更短、更稳
+    - **原则**
+      - 窄屏优先显示模型、权限、目标和最必要快捷键
+      - 宽屏保留完整快捷键信息
+      - 避免状态行挤压输入区可见宽度
+
+11. **[x] 内部进度提示语收敛**
+    - **文件**：`rust/crates/rusty-claude-cli/src/main.rs`
+    - **目标**：让 planning / heartbeat / tool progress 提示更短、更统一
+    - **原则**
+      - 少重复“status”这类噪音词
+      - 保留阶段、耗时和关键信息
+      - 让进度提示更像工作台状态而不是日志
+
+12. **[x] WebSearch 工具卡片统一**
+    - **文件**：`rust/crates/rusty-claude-cli/src/main.rs`
+    - **目标**：让 WebSearch 的工具调用卡片和其它工具保持同一视觉语言
+    - **原则**
+      - 保留工具名和查询摘要
+      - 与 Glob / Grep / Bash 的卡片结构对齐
+      - 降低“不同模块拼接感”
+
 #### 验收标准
 
 - 长文本在 80 列左右终端下仍然可读
