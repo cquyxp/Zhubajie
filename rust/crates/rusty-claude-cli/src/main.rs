@@ -4325,10 +4325,9 @@ fn render_config_report(section: Option<&str>) -> Result<String, Box<dyn std::er
     let discovered = loader.discover();
     let runtime_config = loader.load()?;
 
-    let mut lines = vec![
-        "Config".to_string(),
+    let mut sections = vec![
         format!(
-            "Summary\n  Working directory {}\n  Loaded files      {}\n  Merged keys       {}",
+            "Config\n\nSummary\n  Working directory {}\n  Loaded files      {}\n  Merged keys       {}",
             cwd.display(),
             runtime_config.loaded_entries().len(),
             runtime_config.merged().len()
@@ -4350,14 +4349,14 @@ fn render_config_report(section: Option<&str>) -> Result<String, Box<dyn std::er
         } else {
             "missing"
         };
-        lines.push(format!(
+        sections.push(format!(
             "  {source:<7} {status:<7} {}",
             entry.path.display()
         ));
     }
 
     if let Some(section) = section {
-        lines.push(format!("Merged section: {section}"));
+        sections.push(format!("Merged section: {section}"));
         let value = match section {
             "env" => runtime_config.get("env"),
             "hooks" => runtime_config.get("hooks"),
@@ -4366,44 +4365,33 @@ fn render_config_report(section: Option<&str>) -> Result<String, Box<dyn std::er
                 .get("plugins")
                 .or_else(|| runtime_config.get("enabledPlugins")),
             "schema" => {
-                lines.push("  JSON Schema".to_string());
-                lines.push(serde_json::to_string_pretty(
-                    &runtime::config_validate::settings_schema(),
-                )?);
-                return Ok(lines.join(
-                    "
-",
+                sections.push(format!(
+                    "JSON Schema\n{}",
+                    serde_json::to_string_pretty(
+                        &runtime::config_validate::settings_schema(),
+                    )?
                 ));
+                return Ok(sections.join("\n\n"));
             }
             other => {
-                lines.push(format!(
+                sections.push(format!(
                     "  Unsupported config section '{other}'. Use env, hooks, model, plugins, or schema."
                 ));
-                return Ok(lines.join(
-                    "
-",
-                ));
+                return Ok(sections.join("\n\n"));
             }
         };
-        lines.push(format!(
+        sections.push(format!(
             "  {}",
             match value {
                 Some(value) => value.render(),
                 None => "<unset>".to_string(),
             }
         ));
-        return Ok(lines.join(
-            "
-",
-        ));
+        return Ok(sections.join("\n\n"));
     }
 
-    lines.push("Merged JSON".to_string());
-    lines.push(format!("  {}", runtime_config.as_json().render()));
-    Ok(lines.join(
-        "
-",
-    ))
+    sections.push(format!("Merged JSON\n  {}", runtime_config.as_json().render()));
+    Ok(sections.join("\n\n"))
 }
 
 fn render_config_json(
@@ -4455,22 +4443,18 @@ fn render_config_json(
 fn render_memory_report() -> Result<String, Box<dyn std::error::Error>> {
     let cwd = env::current_dir()?;
     let project_context = ProjectContext::discover(&cwd, DEFAULT_DATE)?;
-    let mut lines = vec![
-        "Memory".to_string(),
-        format!(
-            "Summary\n  Working directory {}\n  Instruction files {}",
-            cwd.display(),
-            project_context.instruction_files.len()
-        ),
-    ];
+    let mut sections = vec![format!(
+        "Memory\n\nSummary\n  Working directory {}\n  Instruction files {}",
+        cwd.display(),
+        project_context.instruction_files.len()
+    )];
     if project_context.instruction_files.is_empty() {
-        lines.push("Files".to_string());
-        lines.push(
-            "  No CLAUDE instruction files discovered in the current directory ancestry."
+        sections.push(
+            "Files\n  No CLAUDE instruction files discovered in the current directory ancestry."
                 .to_string(),
         );
     } else {
-        lines.push("Files".to_string());
+        let mut files_section = vec!["Files".to_string()];
         for (index, file) in project_context.instruction_files.iter().enumerate() {
             let preview = file.content.lines().next().unwrap_or("").trim();
             let preview = if preview.is_empty() {
@@ -4478,18 +4462,16 @@ fn render_memory_report() -> Result<String, Box<dyn std::error::Error>> {
             } else {
                 preview
             };
-            lines.push(format!("  {}. {}", index + 1, file.path.display(),));
-            lines.push(format!(
+            files_section.push(format!("  {}. {}", index + 1, file.path.display(),));
+            files_section.push(format!(
                 "     lines={} preview={}",
                 file.content.lines().count(),
                 preview
             ));
         }
+        sections.push(files_section.join("\n"));
     }
-    Ok(lines.join(
-        "
-",
-    ))
+    Ok(sections.join("\n\n"))
 }
 
 fn render_memory_json() -> Result<serde_json::Value, Box<dyn std::error::Error>> {
